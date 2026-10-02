@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -60,13 +59,14 @@ func TestInitCmd_UnwritablePersona(t *testing.T) {
 	}
 }
 
-func TestInitCmd_MigratesLegacySplit(t *testing.T) {
+func TestInitCmd_LeavesExistingPersona(t *testing.T) {
 	root := t.TempDir()
 	persona := filepath.Join(root, "persona")
 	if err := os.MkdirAll(persona, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(persona, "SOUL.md"), []byte("custom-soul"), 0o644); err != nil {
+	mine := "# PERSONA.md\n\n## Self-notes\n\nmy own words\n"
+	if err := os.WriteFile(filepath.Join(persona, "PERSONA.md"), []byte(mine), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	manifest := filepath.Join(root, "mcp.toml")
@@ -89,10 +89,7 @@ func TestInitCmd_MigratesLegacySplit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "custom-soul") {
-		t.Fatalf("custom SOUL.md not migrated: %q", b)
-	}
-	if _, err := os.Stat(filepath.Join(persona, "SOUL.md")); !os.IsNotExist(err) {
-		t.Fatal("SOUL.md should have been removed")
+	if string(b) != mine {
+		t.Fatalf("init rewrote PERSONA.md: %q", b)
 	}
 }

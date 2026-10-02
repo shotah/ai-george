@@ -1,10 +1,7 @@
 package persona
 
 import (
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/shotah/george/internal/selfnote"
@@ -14,34 +11,26 @@ func stampSELF(raw string) string {
 	return selfnote.Stamp(raw)
 }
 
-// retiredSections were kernel-owned in the assistant build. An old
-// PERSONA.md still carries them; sync drops them so the prompt does not
-// teach tokens the harness no longer reads.
-var retiredSections = []string{"## Location pins", "## Follow-up", "## Reactions"}
+// ownedSections are headings george wrote into PERSONA.md before the
+// contract moved into the binary. An old file still carries them; they are
+// dropped from the prompt, never from the file.
+var ownedSections = []string{"## Self-notes", "## Location pins", "## Follow-up", "## Reactions"}
 
-func stampPersona(raw string) string {
-	raw = strings.TrimSpace(raw)
-	for _, heading := range retiredSections {
+var htmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// userPersona is PERSONA.md as the prompt sees it: comments (the template's
+// instructions) and george-owned sections removed.
+func userPersona(raw string) string {
+	raw = strings.TrimSpace(htmlComment.ReplaceAllString(raw, ""))
+	for _, heading := range ownedSections {
 		if start, end, ok := sectionSpan(raw, heading); ok {
 			raw = strings.TrimSpace(raw[:start] + raw[end:])
 		}
 	}
-	raw = upsertSection(raw, "## Self-notes", selfnote.RulesSection)
-	return strings.TrimSpace(raw)
-}
-
-func upsertSection(raw, heading, body string) string {
-	if raw == "" {
-		return body
+	if strings.TrimSpace(strings.TrimPrefix(raw, "# PERSONA.md")) == "" {
+		return ""
 	}
-	if start, end, ok := sectionSpan(raw, heading); ok {
-		return strings.TrimSpace(raw[:start] + body + "\n\n" + raw[end:])
-	}
-	const mem = "## Memory hygiene"
-	if i := strings.Index(raw, mem); i >= 0 {
-		return strings.TrimSpace(raw[:i] + body + "\n\n" + raw[i:])
-	}
-	return raw + "\n\n" + body
+	return raw
 }
 
 // sectionSpan is heading through the next ## heading or EOF.
@@ -73,95 +62,4 @@ func nextHeading(raw string) int {
 		return i + 1
 	}
 	return -1
-}
-
-// SyncKernel migrates leftover SOUL/RULES/USER/TOOLS into PERSONA.md when that
-// file is missing, deletes those legacy files, then writes kernel sections
-// (Self-notes) into PERSONA.md. Best-effort: a read-only mount
-// leaves the prompt stamp (Load) in place and returns the write/remove error.
-func SyncKernel(dir string) (removed []string, err error) {
-	removed, err = reconcileLegacy(dir)
-	if err != nil {
-		return removed, err
-	}
-	if err := stampPersonaFile(dir); err != nil {
-		return removed, err
-	}
-	return removed, nil
-}
-
-func stampPersonaFile(dir string) error {
-	path := filepath.Join(dir, FilePersona)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	next := stampPersona(string(b))
-	if strings.TrimSpace(string(b)) == next {
-		return nil
-	}
-	return os.WriteFile(path, []byte(next+"\n"), 0o644)
-}
-
-func reconcileLegacy(dir string) ([]string, error) {
-	if err := migrateLegacy(dir); err != nil {
-		return nil, err
-	}
-	return removeLegacy(dir)
-}
-
-func migrateLegacy(dir string) error {
-	personaPath := filepath.Join(dir, FilePersona)
-	_, err := os.Stat(personaPath)
-	if err == nil {
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("persona: stat %s: %w", personaPath, err)
-	}
-
-	var parts []string
-	for _, name := range LegacyFiles {
-		text, err := readOptional(filepath.Join(dir, name))
-		if err != nil {
-			return err
-		}
-		if text != "" {
-			parts = append(parts, text)
-		}
-	}
-	if len(parts) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("persona: mkdir %s: %w", dir, err)
-	}
-	body := strings.Join(parts, "\n\n") + "\n"
-	if err := os.WriteFile(personaPath, []byte(body), 0o644); err != nil {
-		return fmt.Errorf("persona: migrate %s: %w", personaPath, err)
-	}
-	return nil
-}
-
-func removeLegacy(dir string) ([]string, error) {
-	var (
-		removed []string
-		errs    []error
-	)
-	for _, name := range LegacyFiles {
-		path := filepath.Join(dir, name)
-		err := os.Remove(path)
-		if err == nil {
-			removed = append(removed, name)
-			continue
-		}
-		if os.IsNotExist(err) {
-			continue
-		}
-		errs = append(errs, fmt.Errorf("persona: remove %s: %w", path, err))
-	}
-	return removed, errors.Join(errs...)
 }

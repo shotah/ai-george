@@ -1535,6 +1535,41 @@ func TestAgent_MaxToolIterations_GracefulLanding(t *testing.T) {
 	}
 }
 
+// A deferral on the landing call has no round left to nudge into: the turn
+// ends with the honest give-up, not a TOOL_MAX_ITERATIONS error.
+func TestAgent_MaxToolIterations_DeferralOnLandingGivesUp(t *testing.T) {
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		if len(req.Tools) > 0 {
+			return &provider.Result{ToolCalls: []provider.ToolCall{
+				{ID: "c", Name: "demo__echo", Arguments: `{}`},
+			}}, nil
+		}
+		return &provider.Result{Content: "The files are missing. Let me try again with a fresh listing."}, nil
+	}}
+	a, err := agent.New(agent.Options{
+		Completer:    fc,
+		Sessions:     newMemHistory(),
+		Tools:        &fakeTools{defs: []provider.ToolDef{{Name: "demo__echo"}}},
+		MaxToolIters: 2,
+		Model:        "m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "loop"})
+	if err != nil {
+		t.Fatalf("landing deferral errored the turn: %v", err)
+	}
+	if !strings.Contains(reply, "couldn't finish") {
+		t.Fatalf("reply = %q, want the give-up", reply)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("model calls = %d, want 2 tool rounds + landing, no nudge round", len(reqs))
+	}
+}
+
 // Past ~70% of the budget the model is told how many rounds remain, once.
 func TestAgent_MaxToolIterations_WarnsNearBudget(t *testing.T) {
 	var reqs []provider.Request

@@ -802,7 +802,9 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				preToolTheater = false
 			}
 			deferral := sawTools && defersPendingWork(res.Content)
-			if (preToolTheater || deferral) && !nudged {
+			// The landing call has no round after it, so a nudge would run
+			// the loop out into an error.
+			if (preToolTheater || deferral) && !nudged && !final {
 				a.log.Warn("model narrated tool action in prose without calling",
 					"chars", len(res.Content),
 					"iteration", iter+1,
@@ -837,7 +839,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				})
 				continue
 			}
-			if deferral && nudged {
+			if deferral && (nudged || final) {
 				// Second stall after nudge — don't ship "give me a moment" as the reply.
 				a.log.Warn("model deferred again after nudge; forcing give-up",
 					"chars", len(res.Content),

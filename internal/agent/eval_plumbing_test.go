@@ -9,6 +9,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -408,6 +409,14 @@ func TestEvalHarness_ByArgs(t *testing.T) {
 	want := map[string]string{`{"path":"a.go"}`: "package a", `{"path":"b.go"}`: "package b", `{"path":"c.go"}`: "missing"}
 	if !maps.Equal(got, want) {
 		t.Fatalf("results %q want %q", got, want)
+	}
+}
+
+func TestCheckEval_TurnErrorFailsRun(t *testing.T) {
+	out := evalOutcome{Err: errors.New("agent: exceeded TOOL_MAX_ITERATIONS (10)")}
+	fails := checkEval(context.Background(), out, evalExpect{})
+	if len(fails) != 1 || !strings.Contains(fails[0], "TOOL_MAX_ITERATIONS") {
+		t.Fatalf("fails = %v", fails)
 	}
 }
 

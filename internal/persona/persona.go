@@ -1,44 +1,47 @@
-// Package persona loads and concatenates markdown from PERSONA_DIR.
+// Package persona builds the system prompt: george's contract, then the
+// human's PERSONA.md, then the agent-written SELF.md.
 package persona
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/shotah/george/internal/selfnote"
 )
 
 const (
-	// FilePersona is the operator-owned persona file (identity, rules, human, tools).
+	// FilePersona is the human-owned personality file: name, voice, tone.
+	// It is not evaluated; george never writes it.
 	FilePersona = "PERSONA.md"
 	// FileSelf is the agent-written personality file. Same basename as selfnote.FileName.
 	FileSelf = "SELF.md"
 )
 
-// PreferredOrder is the concat order for the two persona files.
-// Missing files are skipped. Other *.md files are ignored (legacy split is
-// deleted by SyncKernel, not loaded).
-// PERSONA (who / how / human / tools) → SELF (who it's become; agent-written).
+// PreferredOrder is the concat order for the two persona files, after the
+// contract. Missing files are skipped. Other *.md files are ignored.
 var PreferredOrder = []string{
 	FilePersona,
 	FileSelf,
 }
 
-// LegacyFiles is the pre-collapse split. SyncKernel concatenates these into
-// PERSONA.md when that file is missing, then deletes them.
-var LegacyFiles = []string{
-	"SOUL.md",
-	"RULES.md",
-	"USER.md",
-	"TOOLS.md",
+//go:embed contract.md
+var contract string
+
+// Contract is george's harness-owned prompt layer: how the work is done.
+// The live eval grades exactly this text; PERSONA.md cannot replace it.
+func Contract() string {
+	return strings.TrimSpace(contract) + "\n\n" + selfnote.RulesSection
 }
 
-// Load reads PERSONA.md then SELF.md and concatenates them.
-// A missing directory or empty set of files yields ("", nil) — tolerant by design.
+// Load returns the contract, then PERSONA.md, then SELF.md. A missing
+// directory or missing files still yield the contract.
 func Load(dir string) (string, error) {
-	var parts []string
+	parts := []string{Contract()}
 	for _, name := range PreferredOrder {
 		text, err := readOptional(filepath.Join(dir, name))
 		if err != nil {
@@ -60,7 +63,7 @@ func stampPreferred(name, text string) string {
 	case FileSelf:
 		return stampSELF(text)
 	case FilePersona:
-		return stampPersona(text)
+		return userPersona(text)
 	default:
 		return text
 	}

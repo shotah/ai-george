@@ -6,10 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shotah/george/examples"
 	"github.com/shotah/george/internal/persona"
 )
 
-func TestLoad_PersonaThenSelfIgnoresExtras(t *testing.T) {
+func TestLoad_ContractThenPersonaThenSelfIgnoresExtras(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) {
 		t.Helper()
@@ -21,36 +22,37 @@ func TestLoad_PersonaThenSelfIgnoresExtras(t *testing.T) {
 	write("PERSONA.md", "persona-body")
 	write("SELF.md", "self-body")
 	write("SOUL.md", "soul-leftover")
-	write("AAA.md", "extra-a")
 	write("notes.txt", "ignored")
 
 	got, err := persona.Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-
+	if !strings.HasPrefix(got, persona.Contract()) {
+		t.Fatalf("contract must lead the prompt: %q", got)
+	}
 	personaIdx := strings.Index(got, "persona-body")
 	selfIdx := strings.Index(got, "self-body")
-	if personaIdx < 0 || selfIdx < 0 {
-		t.Fatalf("missing parts in %q", got)
-	}
-	if personaIdx >= selfIdx {
+	if personaIdx < len(persona.Contract()) || selfIdx < personaIdx {
 		t.Fatalf("order wrong in %q", got)
 	}
-	for _, bad := range []string{"extra-z", "soul-leftover", "extra-a", "ignored"} {
+	for _, bad := range []string{"extra-z", "soul-leftover", "ignored"} {
 		if strings.Contains(got, bad) {
 			t.Fatalf("unexpected %q in %q", bad, got)
 		}
 	}
 }
 
-func TestLoad_MissingDir(t *testing.T) {
+func TestLoad_MissingDirIsContract(t *testing.T) {
 	got, err := persona.Load(filepath.Join(t.TempDir(), "nope"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got != "" {
-		t.Fatalf("got %q, want empty", got)
+	if got != persona.Contract() {
+		t.Fatalf("got %q, want the contract alone", got)
+	}
+	if !strings.Contains(got, "fs__file_get") || !strings.Contains(got, "How this human likes the work done") {
+		t.Fatalf("contract missing the edit chain or self-note rules: %q", got)
 	}
 }
 
@@ -68,138 +70,59 @@ func TestLoad_MissingPreferredTolerant(t *testing.T) {
 	}
 }
 
-func TestLoad_StampsSelfAndPersona(t *testing.T) {
+// An old PERSONA.md still carries sections george used to stamp. They leave
+// the prompt; the file is never written.
+func TestLoad_DropsOwnedSectionsWithoutWriting(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "SELF.md"), []byte("# SELF.md — Who You Are Becoming\n\n> stale\n\n- dry humor\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	body := "# PERSONA.md\n\n## Identity lock\n\nhold id\n\n## Self-notes (`self_note` → SELF.md)\n\n- stale rule\n\n## Memory hygiene\n\nhold mem\n"
-	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), []byte(body), 0o644); err != nil {
+	body := "# PERSONA.md\n\n## Voice\n\nkeep me\n\n## Self-notes (`self_note` → SELF.md)\n\n- stale rule\n\n## Location pins\n\n- gps\n\n## Follow-up\n\n- [wait]\n\n## Reactions\n\n- [react]\n"
+	path := filepath.Join(dir, "PERSONA.md")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := persona.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(got, "stale") || strings.Contains(got, "stale rule") {
-		t.Fatalf("stale kernel text kept: %q", got)
+	mine := strings.TrimPrefix(got, persona.Contract())
+	for _, gone := range []string{"stale", "gps", "[wait]", "[react]", "## Location pins", "## Self-notes"} {
+		if strings.Contains(mine, gone) {
+			t.Fatalf("owned %q kept: %q", gone, mine)
+		}
 	}
-	if !strings.Contains(got, "Repo facts are memory") || !strings.Contains(got, "- dry humor") {
-		t.Fatalf("SELF stamp missing: %q", got)
+	if !strings.Contains(mine, "## Voice\n\nkeep me") || !strings.Contains(mine, "- dry humor") {
+		t.Fatalf("lost the human's text: %q", mine)
 	}
-	if !strings.Contains(got, "How this human likes the work done") || !strings.Contains(got, "hold mem") {
-		t.Fatalf("PERSONA stamp missing: %q", got)
+	if strings.Count(got, "## Self-notes") != 1 {
+		t.Fatalf("self-note rules should appear once, from the contract: %q", got)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != body {
+		t.Fatalf("PERSONA.md was written: %q %v", b, err)
 	}
 }
 
-func TestSyncKernel_RewritesPersonaSection(t *testing.T) {
+// The template `george init` ships is all comment: a fresh install runs the
+// contract alone, and the example Timezone line is not the human's zone.
+func TestLoad_ShippedTemplateIsEmpty(t *testing.T) {
 	dir := t.TempDir()
-	old := "# PERSONA.md\n\n## Self-notes (`self_note` → SELF.md)\n\n- stale\n\n## Memory hygiene\n\nok\n"
-	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), []byte(old), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	removed, err := persona.SyncKernel(dir)
+	tmpl, err := examples.FS.ReadFile("persona/PERSONA.example.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 0 {
-		t.Fatalf("removed=%v, want none", removed)
+	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), tmpl, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "PERSONA.md"))
+	got, err := persona.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(b)
-	if strings.Contains(got, "- stale") {
-		t.Fatalf("stale section kept: %q", got)
+	if got != persona.Contract() {
+		t.Fatalf("template leaked into the prompt: %q", strings.TrimPrefix(got, persona.Contract()))
 	}
-	if !strings.Contains(got, "How this human likes the work done") || !strings.Contains(got, "## Memory hygiene") {
-		t.Fatalf("sync missing kernel or rest of file: %q", got)
-	}
-}
-
-func TestSyncKernel_MigratesAndRemovesLegacy(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("SOUL.md", "soul-body")
-	write("RULES.md", "## Memory hygiene\n\nrules-body")
-	write("USER.md", "user-body")
-	write("TOOLS.md", "tools-body")
-	write("SELF.md", "self-body")
-	write("keep.md", "should-stay")
-
-	removed, err := persona.SyncKernel(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed) != len(persona.LegacyFiles) {
-		t.Fatalf("removed=%v", removed)
-	}
-	for _, name := range persona.LegacyFiles {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Fatalf("%s still present: %v", name, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "keep.md")); err != nil {
-		t.Fatalf("unrelated file deleted: %v", err)
-	}
-
-	b, err := os.ReadFile(filepath.Join(dir, "PERSONA.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(b)
-	for _, want := range []string{"soul-body", "rules-body", "user-body", "tools-body"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("migrated PERSONA.md missing %q: %q", want, got)
-		}
-	}
-	if !strings.Contains(got, "How this human likes the work done") {
-		t.Fatalf("stamp missing after migrate: %q", got)
-	}
-
-	loaded, err := persona.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(loaded, "soul-body") || !strings.Contains(loaded, "self-body") {
-		t.Fatalf("Load missing migrated content: %q", loaded)
-	}
-	if strings.Contains(loaded, "should-stay") {
-		t.Fatalf("Load included extra file: %q", loaded)
-	}
-}
-
-func TestSyncKernel_KeepsExistingPersonaWhenRemovingLegacy(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), []byte("keep-me\n\n## Memory hygiene\n\nok\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("old-soul"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	removed, err := persona.SyncKernel(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed) != 1 || removed[0] != "SOUL.md" {
-		t.Fatalf("removed=%v", removed)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "PERSONA.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), "keep-me") {
-		t.Fatalf("existing PERSONA.md overwritten: %q", b)
-	}
-	if strings.Contains(string(b), "old-soul") {
-		t.Fatalf("legacy content merged into existing PERSONA.md: %q", b)
+	if _, _, source := persona.ResolveTimezone(got, "UTC"); source == persona.FilePersona {
+		t.Fatal("commented example Timezone was read as the human's")
 	}
 }
 
@@ -235,29 +158,5 @@ func TestResolveTimezone_PrefersPersonaMarkdown(t *testing.T) {
 	name, loc, source = persona.ResolveTimezone("", "")
 	if name != "America/Los_Angeles" || loc == nil {
 		t.Fatalf("empty fallback name=%q source=%q", name, source)
-	}
-}
-
-func TestSyncKernel_DropsRetiredSections(t *testing.T) {
-	dir := t.TempDir()
-	old := "# PERSONA.md\n\n## Location pins\n\n- gps\n\n## Follow-up\n\n- [wait]\n\n## Reactions\n\n- [react]\n\n## Voice\n\nkeep me\n"
-	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), []byte(old), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := persona.SyncKernel(dir); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "PERSONA.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(b)
-	for _, gone := range []string{"## Location pins", "## Follow-up", "## Reactions", "[wait]", "gps"} {
-		if strings.Contains(got, gone) {
-			t.Fatalf("retired %q kept: %q", gone, got)
-		}
-	}
-	if !strings.Contains(got, "## Voice\n\nkeep me") || !strings.Contains(got, "## Self-notes") {
-		t.Fatalf("lost the rest of the file: %q", got)
 	}
 }

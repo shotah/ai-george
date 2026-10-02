@@ -53,13 +53,6 @@ func run() int {
 		"tool_trace", cfg.ToolTrace,
 	)
 
-	removed, err := persona.SyncKernel(cfg.PersonaDir)
-	if err != nil {
-		logger.Warn("PERSONA.md kernel section not written (persona dir not writable?)", "err", err)
-	}
-	if len(removed) > 0 {
-		logger.Info("removed legacy persona files", "files", removed)
-	}
 	personaText, err := persona.Load(cfg.PersonaDir)
 	if err != nil {
 		logger.Error("persona load failed", "err", err)

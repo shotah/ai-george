@@ -58,7 +58,21 @@ Once the four mouths are gone, `go mod tidy` should drop `discordgo`, `go-telegr
 
 ### Persona
 
-`examples/persona/PERSONA.example.md` is an assistant seed. Rewrite it as a coding seed and keep it short, because small models drop the middle of a long note. It should carry:
+The prompt has three layers, and each has one owner:
+
+| Layer | Owner | Holds | Evaluated |
+| --- | --- | --- | --- |
+| Contract | george, embedded in the binary (`internal/persona/contract.md`) | How the work is done: the edit chain, batching, the green check, commit and push rules, memory and `self_note` rules | Yes. The eval grades exactly this text |
+| `PERSONA.md` | You | Name, voice, tone. Empty by default | No. We cannot vouch for what you add |
+| `SELF.md` | The agent | Your coding taste, noted when you say it | No |
+
+The prompt is contract, then `PERSONA.md`, then `SELF.md`. george never writes `PERSONA.md`. `persona.SyncKernel`, which stamped kernel sections into that file on every boot, goes away. A heading george used to own (`## Self-notes`, and the retired assistant sections) is dropped from an old `PERSONA.md` at load time, without touching the file.
+
+The eval runs the contract with an empty `PERSONA.md`, which is the shipped default, so what passed is what you get. `-eval.persona=<file>` runs your persona on top of the contract, so you can find out whether your personality breaks the edit chain.
+
+A persona can still contradict the contract, and a small model will not always let the contract win. That is why the persona is disclaimed, not guaranteed.
+
+The contract text has to be earned. The first contract is the old seed's working rules, moved almost word for word, because the two rewrites tried so far scored 0 of 10 against 9 of 10 for the seed. Then the assistant-only parts come out one cut at a time, each cut held to `-eval.n=5` on every fixture, and a cut that drops the pass rate goes back in. The target is the coding list:
 
 - identity in two lines, with answers first
 - the chain: read before patch, patch before the check, and status only when asked
@@ -68,7 +82,7 @@ Once the four mouths are gone, `go mod tidy` should drop `discordgo`, `go-telegr
 - stop after the same error twice, and report it
 - through `shell`: no `git push`, `reset --hard`, or `clean`, no deletes outside the tree, and no publishes
 
-These sections go away: **About you** (Google email, sport, timezone), **Directives**, **Memory hygiene** (`aim/`, `todo/`, `follow/`, `pref/hours`), and every example about the calendar, the dentist, or the scoop. `persona.SyncKernel` stops writing `## Location pins`, `## Follow-up`, and `## Reactions`.
+Examples in the contract must not be the fixture's own words. A small model copies an example sentence into memory and into its replies.
 
 ### Harness stamp
 
@@ -188,7 +202,7 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 6. **Off Docker.** Delete the container files, heartbeat, doctor, `status`, drain, SIGHUP reload, and `auth`. Add the env file, the XDG paths, the root from the cwd, and `${GEORGE_ROOT}` in the manifest. Gate: `cd /tmp/scratch && george` boots against `~/.config/george/` with no `.env` in that directory.
 7. **Memory scope.** Add the `scope` column, the repo id, and the session per repo. Gate: a row stored in repo A does not hydrate in repo B, and a `user` row hydrates in both.
 8. **stdio input.** Add the line editor, bracketed paste, and Ctrl-C to cancel, and delete coalescing. Gate: a 40-line paste is one turn.
-9. **Persona.** Replace the seed with the coding one, including the memory lines (repo versus you, and repo files first). Run the bake-off against the baseline from step 1.
+9. **Contract.** Move the seed's rules into the embedded contract, drop `SyncKernel`, and ship an empty `PERSONA.md` template. Gate: the eval passes at the same rate as before the move. Then trim the assistant parts one cut at a time under `-eval.n=5`, and add the memory lines (repo versus you, and repo files first).
 10. **Context budget.** Read `/tokens` on a long session, then set the history, result, and iteration defaults.
 11. **Evals.** Add `results: [...]` and `script` to the harness and the dot alias to the host, then the coding fixtures, one at a time, each green at `-eval.n=5` before the next one starts. Add a memory fixture: "tests here run with `make test`" lands a repo-scope `cmd/test` row.
 12. **Docs.** `architecture.md`, `design.md`, `readme.md`, `eval_setup.md`, `coding-mcp.md` (sandbox), `examples/`. They should describe the CLI and nothing that was removed.
@@ -196,6 +210,7 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 ## Decisions
 
 - **Memory:** kept, scoped to you and to the repo, with goals as repo rows. Repo files win over rows.
+- **Contract and persona:** how the work is done is george's contract, embedded and evaluated. `PERSONA.md` is yours, for personality only, empty by default, and not evaluated. See [Persona](#persona).
 - **SELF.md:** kept, as your coding taste, under `~/.config/george/`.
 - **Consolidator:** removed. It is a completion on every boot, and the fold plus deliberate stores already fill the table. If rows ever pile up, bring it back as an explicit `george memory consolidate`, not a timer.
 - **web_search:** kept as it is.
@@ -203,7 +218,7 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 - **One-shot mode:** not planned. There is no use case yet.
 - **Mangled names:** unit tests for the host repairs, plus a dot alias, plus one live fixture with a scripted first round.
 - **Root and config:** the root is the cwd's git toplevel, keys and settings live in `~/.config/george/env`, and data lives in `~/.local/share/george/`.
-- **Shell sandbox:** none. No approval prompt, no `bwrap`. The agent edits and runs freely in `--root`, and git is the undo. Git does not cover these, and the seed's last bullet (see [Persona](#persona)) is the only guard on them:
+- **Shell sandbox:** none. No approval prompt, no `bwrap`. The agent edits and runs freely in `--root`, and git is the undo. Git does not cover these, and the contract's last bullet (see [Persona](#persona)) is the only guard on them:
   - untracked and ignored files (`.env`, build output) have no history to revert to
   - anything outside `--root`; `shell-mcp` sets the cwd, not a jail
   - git commands run through `shell`, such as `git push`, `git reset --hard`, and `git clean`, which skip the no-remote rule on `git-mcp`

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/shotah/george/examples"
-	"github.com/shotah/george/internal/persona"
 )
 
 // initCmd scaffolds persona + mcp.toml (+ .env.example) from embedded templates.
@@ -37,15 +36,6 @@ func initCmd() int {
 	wrote := 0
 	skipped := 0
 
-	// Migrate leftover SOUL/RULES/USER/TOOLS into PERSONA.md before seeding so
-	// a custom split is not overwritten by the example PERSONA.md.
-	if removed, err := persona.SyncKernel(personaDir); err != nil {
-		fmt.Fprintf(os.Stderr, "init: persona sync: %v\n", err)
-		return 1
-	} else if len(removed) > 0 {
-		fmt.Fprintf(os.Stderr, "removed legacy persona files: %s\n", strings.Join(removed, ", "))
-	}
-
 	entries, err := fs.ReadDir(examples.FS, "persona")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init: read embedded persona: %v\n", err)
@@ -70,11 +60,6 @@ func initCmd() int {
 			skipped++
 			fmt.Fprintf(os.Stderr, "skip  %s (exists)\n", dest)
 		}
-	}
-
-	if _, err := persona.SyncKernel(personaDir); err != nil {
-		fmt.Fprintf(os.Stderr, "init: persona stamp: %v\n", err)
-		return 1
 	}
 
 	n, err := copyEmbeddedIfMissing("mcp.toml.example", manifestPath)

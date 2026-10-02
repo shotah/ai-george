@@ -39,11 +39,12 @@ import (
 // evalFixtureDir holds one JSON file per scenario.
 const evalFixtureDir = "testdata/eval"
 
-// evalPersonaSeed is the file under test — the shipped seed, not a stub.
+// evalPersonaSeed is the PERSONA.md `george init` ships. It is all comment, so
+// the default eval grades the contract alone: what a fresh install runs.
 const evalPersonaSeed = "../../examples/persona/PERSONA.example.md"
 
-// evalPersonaPath is the persona actually loaded; the live eval overrides it
-// with -eval.persona to bake off a candidate seed against the fixtures.
+// evalPersonaPath is the PERSONA.md actually loaded; -eval.persona swaps in
+// a human's file to check it against the contract.
 var evalPersonaPath = evalPersonaSeed
 
 const evalTZ = "America/Los_Angeles"
@@ -170,6 +171,9 @@ type evalCall struct {
 type evalOutcome struct {
 	Calls []evalCall
 	Reply string
+	// Err is Handle's error. A turn that errors is a failed run, not a
+	// stopped fixture, so the other runs still report.
+	Err error
 	// Rounds is completer calls for the turn, scripted ones included; the
 	// last one is the reply.
 	Rounds           int
@@ -420,8 +424,8 @@ func (r *recordingTools) snapshot() []evalCall {
 	return append([]evalCall(nil), r.calls...)
 }
 
-// evalPersona copies the seed under test into a fresh persona dir and loads
-// it the way boot does (kernel sections stamped).
+// evalPersona copies the PERSONA.md under test into a fresh persona dir and
+// loads it the way boot does: contract first.
 func evalPersona(t *testing.T, dir string) string {
 	t.Helper()
 	seed, err := os.ReadFile(evalPersonaPath)
@@ -429,9 +433,6 @@ func evalPersona(t *testing.T, dir string) string {
 		t.Fatalf("read seed %s: %v", evalPersonaPath, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, persona.FilePersona), seed, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := persona.SyncKernel(dir); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := persona.Load(dir)
@@ -555,12 +556,10 @@ func runEvalFixture(ctx context.Context, t *testing.T, completer provider.Comple
 	}
 
 	reply, err := a.Handle(ctx, channel.Message{SessionID: sessionID, UserID: "eval", Text: fx.Inbound})
-	if err != nil {
-		t.Fatalf("%s: Handle: %v", fx.Name, err)
-	}
 	return evalOutcome{
 		Calls:            rec.snapshot(),
 		Reply:            reply,
+		Err:              err,
 		Rounds:           counter.round(),
 		PromptTokens:     counter.usage.PromptTokens,
 		CompletionTokens: counter.usage.CompletionTokens,
@@ -603,6 +602,9 @@ func expandEvalIDs(s string, ids []int64) string {
 func checkEval(ctx context.Context, out evalOutcome, want evalExpect) []string {
 	want = expandEvalExpect(want, out.MemoryIDs)
 	var fails []string
+	if out.Err != nil {
+		fails = append(fails, "turn errored: "+out.Err.Error())
+	}
 	reply := out.Reply
 
 	for _, c := range want.ToolsCalled {
