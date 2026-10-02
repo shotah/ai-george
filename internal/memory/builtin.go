@@ -100,8 +100,6 @@ func (b *Builtin) migrate() error {
 			return fmt.Errorf("memory: migrate: %w", err)
 		}
 	}
-	// Additive column for consolidator retry/quarantine (ignore if already present).
-	_, _ = b.db.Exec(`ALTER TABLE memory ADD COLUMN consolidate_attempts INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -115,17 +113,15 @@ func (b *Builtin) Close() error {
 
 // StatsSnapshot is the /memstats view of the builtin store.
 type StatsSnapshot struct {
-	Total       int
-	ByKind      map[string]int
-	Active      int
-	Expired     int
-	Superseded  int
-	Backlog     int // unconsolidated episodes still eligible
-	Quarantined int // episodes past the consolidate attempt limit
-	DBBytes     int64
+	Total      int
+	ByKind     map[string]int
+	Active     int
+	Expired    int
+	Superseded int
+	DBBytes    int64
 }
 
-// Stats returns row counts, consolidation backlog, and an estimated DB size.
+// Stats returns row counts and an estimated DB size.
 func (b *Builtin) Stats(ctx context.Context) (StatsSnapshot, error) {
 	if b == nil || b.db == nil {
 		return StatsSnapshot{}, fmt.Errorf("memory: nil store")
@@ -162,20 +158,6 @@ func (b *Builtin) Stats(ctx context.Context) (StatsSnapshot, error) {
 				AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END), 0)
 		FROM memory`, now, now).Scan(&snap.Superseded, &snap.Expired, &snap.Active); err != nil {
 		return StatsSnapshot{}, fmt.Errorf("memory: stats state: %w", err)
-	}
-
-	if err := b.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM memory
-		WHERE kind = ? AND consolidated = 0 AND superseded_by IS NULL
-		  AND consolidate_attempts < ?`,
-		KindEpisode, maxConsolidateAttempts).Scan(&snap.Backlog); err != nil {
-		return StatsSnapshot{}, fmt.Errorf("memory: stats backlog: %w", err)
-	}
-	if err := b.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM memory
-		WHERE kind = ? AND (consolidated = ? OR consolidate_attempts >= ?)`,
-		KindEpisode, consolidatedQuarantine, maxConsolidateAttempts).Scan(&snap.Quarantined); err != nil {
-		return StatsSnapshot{}, fmt.Errorf("memory: stats quarantine: %w", err)
 	}
 
 	var pageCount, pageSize int64
@@ -279,32 +261,6 @@ func (b *Builtin) ActiveByKindSubject(ctx context.Context, kind, subject string)
 	return e, true, nil
 }
 
-// ListBySubjectPrefix returns live rows whose subject starts with prefix,
-// most recently updated first. limit < 1 is the harness window (horizonFetch).
-func (b *Builtin) ListBySubjectPrefix(ctx context.Context, kind, prefix string, limit int) ([]Entry, error) {
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	prefix = strings.TrimSpace(prefix)
-	if kind == "" || prefix == "" {
-		return nil, nil
-	}
-	if limit < 1 {
-		limit = horizonFetch
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rows, err := b.db.QueryContext(ctx, `
-		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
-		FROM memory
-		WHERE kind = ? AND subject LIKE ? AND superseded_by IS NULL
-		  AND (expires_at IS NULL OR expires_at > ?)
-		ORDER BY updated_at DESC
-		LIMIT ?`, kind, prefix+"%", now, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	return scanEntries(rows)
-}
-
 // Recall runs FTS5 + recency ranking.
 func (b *Builtin) Recall(ctx context.Context, query string, limit int) ([]Entry, error) {
 	if limit < 1 {
@@ -401,58 +357,6 @@ func (b *Builtin) Hydrate(ctx context.Context, query string, limit int) ([]Entry
 		out = out[:limit]
 	}
 	return out, nil
-}
-
-// ListUnconsolidatedEpisodes returns episode rows awaiting consolidation.
-func (b *Builtin) ListUnconsolidatedEpisodes(ctx context.Context, limit int) ([]Entry, error) {
-	if limit < 1 {
-		limit = 20
-	}
-	rows, err := b.db.QueryContext(ctx, `
-		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
-		FROM memory
-		WHERE kind = ? AND consolidated = 0 AND superseded_by IS NULL
-		  AND consolidate_attempts < ?
-		  AND (expires_at IS NULL OR expires_at > ?)
-		ORDER BY created_at ASC
-		LIMIT ?`, KindEpisode, maxConsolidateAttempts, time.Now().UTC().Format(time.RFC3339Nano), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	return scanEntries(rows)
-}
-
-// MarkConsolidated marks episode ids as processed by the consolidator.
-func (b *Builtin) MarkConsolidated(ctx context.Context, ids []int64) error {
-	for _, id := range ids {
-		if _, err := b.db.ExecContext(ctx, `
-			UPDATE memory SET consolidated = 1, updated_at = ? WHERE id = ?`,
-			time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// StoreConsolidated inserts a consolidation-sourced row.
-func (b *Builtin) StoreConsolidated(ctx context.Context, kind, subject, content string) (Entry, error) {
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	if err := ValidateKind(kind); err != nil {
-		return Entry{}, err
-	}
-	now := time.Now().UTC()
-	res, err := b.db.ExecContext(ctx, `
-		INSERT INTO memory (kind, subject, content, source, confidence, created_at, updated_at, consolidated)
-		VALUES (?, ?, ?, ?, 1.0, ?, ?, 1)`,
-		kind, strings.TrimSpace(subject), strings.TrimSpace(content), SourceConsolidation,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
-	)
-	if err != nil {
-		return Entry{}, err
-	}
-	id, _ := res.LastInsertId()
-	return b.get(ctx, id)
 }
 
 // Supersede links oldID → newID without deleting.

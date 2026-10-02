@@ -3,15 +3,10 @@ module github.com/shotah/george
 go 1.26.0
 
 require (
-	github.com/bwmarrin/discordgo v0.29.0
 	github.com/caarlos0/env/v11 v11.4.1
-	github.com/go-telegram/bot v1.22.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/openai/openai-go/v3 v3.44.0
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/slack-go/slack v0.27.0
-	github.com/yuin/goldmark v1.8.5
 	modernc.org/sqlite v1.54.0
 )
 
@@ -29,7 +24,6 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	modernc.org/libc v1.74.1 // indirect

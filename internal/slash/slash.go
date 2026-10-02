@@ -1,8 +1,7 @@
 // Package slash is the harness command catalog.
 //
-// Telegram setMyCommands, stdio's ready line, /help, and the pendant
-// mailbox cmds frame all read this list. Handle still implements each
-// command; aliases (/clear, /stop, /quit) stay out of the menu.
+// stdio's ready line and /help read this list. Handle still implements
+// each command; aliases (/clear, /stop, /quit) stay out of the menu.
 package slash
 
 import (
@@ -17,26 +16,21 @@ type Command struct {
 	Args bool   `json:"args,omitempty"`
 }
 
-// Catalog is the menu the mouths publish. Order is the picker order.
+// Catalog is the menu stdio publishes. Order is the picker order.
 func Catalog() []Command {
 	return []Command{
 		{Name: "new", Hint: "reset this session's history"},
 		{Name: "cancel", Hint: "stop the in-flight turn"},
 		{Name: "status", Hint: "uptime, model, history, tools, turns"},
 		{Name: "tools", Hint: "prefixed tool catalog (published vs available)"},
-		{Name: "examples", Hint: "capability idea (on|off)", Args: true},
 		{Name: "perf", Hint: "last turns: invocations, tools, batch, recoveries"},
-		{Name: "memstats", Hint: "memory row counts and consolidation"},
+		{Name: "memstats", Hint: "memory row counts"},
 		{Name: "toolstats", Hint: "per-tool call ledger since boot"},
 		{Name: "tokens", Hint: "prompt token breakdown (estimates)"},
-		{Name: "auth", Hint: "remote OAuth (url / paste code)", Args: true},
 		{Name: "help", Hint: "this list"},
 		{Name: "brief", Hint: "hold a prefix ~6h", Args: true},
 		{Name: "short", Hint: "hold a prefix ~27h", Args: true},
 		{Name: "off", Hint: "drop a prefix hold", Args: true},
-		{Name: "planner", Hint: "daily planning session (on|off|HH:MM)", Args: true},
-		{Name: "aims", Hint: "aim ledger (area | rubric | block)", Args: true},
-		{Name: "todo", Hint: "pocket list (done <id|slug>)", Args: true},
 	}
 }
 

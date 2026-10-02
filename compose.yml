@@ -1,8 +1,7 @@
 # Sample compose — one container = one persona + one model + one memory volume.
 # Copy .env.example → .env and fill secrets before `docker compose up`.
 #
-# Milestone 1 (stdio REPL):
-#   set CHANNEL=stdio in .env, then:
+# stdio REPL:
 #   docker compose run --rm -it george
 
 services:
@@ -16,7 +15,6 @@ services:
     image: george:local
     env_file: .env
     environment:
-      CHANNEL: stdio
       HOME: /data
       PERSONA_DIR: /persona
       DATA_DIR: /data
@@ -27,6 +25,8 @@ services:
       - ./deploy/mcp.toml:/etc/george/mcp.toml:ro
       - ./deploy/data:/data
       - ./deploy/secrets:/secrets:ro
+      # Coding-agent jail for fs-mcp, git-mcp, and shell-mcp.
+      - ./:/workspace
     # No ports — outbound only (Telegram long-poll). Healthcheck is an exit code.
     # Exec form required: distroless has no shell (do not use CMD-SHELL).
     healthcheck:

@@ -12,17 +12,6 @@ import (
 	"github.com/shotah/george/internal/channel/stdio"
 )
 
-func TestChannel_Push(t *testing.T) {
-	var out bytes.Buffer
-	ch := &stdio.Channel{Out: &out}
-	if err := ch.Push(context.Background(), channel.Outbound{Text: "wake up"}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "[cron] wake up") {
-		t.Fatalf("out=%q", out.String())
-	}
-}
-
 func TestNew(t *testing.T) {
 	ch := stdio.New()
 	if ch == nil || ch.In == nil || ch.Out == nil || ch.Err == nil {

@@ -12,8 +12,6 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (database/sql)
-
-	"github.com/shotah/george/internal/channel"
 )
 
 // Role values persisted for conversation turns (system/persona is not stored).
@@ -93,11 +91,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS session (
 			id                 TEXT PRIMARY KEY,
 			summary            TEXT NOT NULL DEFAULT '',
-			updated_at         TEXT NOT NULL,
-			last_speaker       TEXT NOT NULL DEFAULT '',
-			waiting_for_reply  INTEGER NOT NULL DEFAULT 0,
-			wait_nudges        INTEGER NOT NULL DEFAULT 0,
-			wait_set_at        TEXT NOT NULL DEFAULT ''
+			updated_at         TEXT NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS session_message (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,54 +107,6 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("session: migrate: %w", err)
 		}
-	}
-	// Existing DBs: CREATE IF NOT EXISTS will not add columns.
-	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN last_speaker TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN waiting_for_reply INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN wait_nudges INTEGER NOT NULL DEFAULT 0`)
-	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN wait_set_at TEXT NOT NULL DEFAULT ''`)
-	return collapseToAgent(s.db)
-}
-
-func collapseToAgent(db *sql.DB) error {
-	sid := channel.AgentSession
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`
-		INSERT INTO session (id, summary, updated_at) VALUES (?, '', ?)
-		ON CONFLICT(id) DO NOTHING`, sid, now); err != nil {
-		return fmt.Errorf("session: collapse insert: %w", err)
-	}
-	var summary string
-	_ = db.QueryRow(`SELECT summary FROM session WHERE id = ?`, sid).Scan(&summary)
-	if strings.TrimSpace(summary) == "" {
-		_ = db.QueryRow(`SELECT summary FROM session WHERE summary != '' ORDER BY length(summary) DESC LIMIT 1`).Scan(&summary)
-		if strings.TrimSpace(summary) != "" {
-			if _, err := db.Exec(`UPDATE session SET summary = ? WHERE id = ?`, summary, sid); err != nil {
-				return fmt.Errorf("session: collapse summary: %w", err)
-			}
-		}
-	}
-	var gWaiting int
-	_ = db.QueryRow(`SELECT waiting_for_reply FROM session WHERE id = ?`, sid).Scan(&gWaiting)
-	if gWaiting == 0 {
-		var ls, waitSet string
-		var wr, wn int
-		err := db.QueryRow(`
-			SELECT last_speaker, waiting_for_reply, wait_nudges, wait_set_at
-			FROM session WHERE id != ? ORDER BY updated_at DESC LIMIT 1`, sid).Scan(&ls, &wr, &wn, &waitSet)
-		if err == nil && wr != 0 {
-			if _, err := db.Exec(`
-				UPDATE session SET last_speaker = ?, waiting_for_reply = ?, wait_nudges = ?, wait_set_at = ?
-				WHERE id = ?`, ls, wr, wn, waitSet, sid); err != nil {
-				return fmt.Errorf("session: collapse wait: %w", err)
-			}
-		}
-	}
-	if _, err := db.Exec(`UPDATE session_message SET session_id = ? WHERE session_id != ?`, sid, sid); err != nil {
-		return fmt.Errorf("session: collapse messages: %w", err)
-	}
-	if _, err := db.Exec(`DELETE FROM session WHERE id != ?`, sid); err != nil {
-		return fmt.Errorf("session: collapse sessions: %w", err)
 	}
 	return nil
 }
@@ -231,7 +177,6 @@ func (s *Store) Append(ctx context.Context, sessionID string, msgs ...Message) e
 	}
 	defer func() { _ = stmt.Close() }()
 
-	lastRole := ""
 	for _, m := range msgs {
 		role := strings.TrimSpace(m.Role)
 		if role != RoleUser && role != RoleAssistant {
@@ -239,17 +184,6 @@ func (s *Store) Append(ctx context.Context, sessionID string, msgs ...Message) e
 		}
 		if _, err := stmt.ExecContext(ctx, sessionID, role, m.Content, now); err != nil {
 			return fmt.Errorf("session: insert message: %w", err)
-		}
-		lastRole = role
-	}
-	if lastRole != "" {
-		speaker := SpeakerAgent
-		if lastRole == RoleUser {
-			speaker = SpeakerUser
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE session SET last_speaker = ? WHERE id = ?`, speaker, sessionID); err != nil {
-			return fmt.Errorf("session: last speaker: %w", err)
 		}
 	}
 
@@ -311,42 +245,6 @@ func (s *Store) Stats(ctx context.Context, sessionID string) (messages int, estT
 		return 0, 0, err
 	}
 	return len(msgs), EstTokens(msgs), nil
-}
-
-// UserActiveSince reports whether a human user message exists at or after since.
-// Cron-injected turns ("[cron]…") are ignored so scheduled jobs do not suppress themselves.
-func (s *Store) UserActiveSince(ctx context.Context, sessionID string, since time.Time) (bool, error) {
-	t, ok, err := s.LastUserAt(ctx, sessionID)
-	if err != nil || !ok {
-		return false, err
-	}
-	return !t.Before(since.UTC()), nil
-}
-
-// LastUserAt is when the last human message landed in sessionID (the
-// [last contact] stamp). Cron-injected turns are ignored. ok is false for a
-// fresh session or an unparseable timestamp.
-func (s *Store) LastUserAt(ctx context.Context, sessionID string) (time.Time, bool, error) {
-	var created string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT created_at FROM session_message
-		WHERE session_id = ? AND role = ?
-		  AND content NOT LIKE '[cron]%'
-		ORDER BY id DESC LIMIT 1`, sessionID, RoleUser).Scan(&created)
-	if err == sql.ErrNoRows {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("session: last user message: %w", err)
-	}
-	t, err := time.Parse(time.RFC3339Nano, created)
-	if err != nil {
-		t, err = time.Parse(time.RFC3339, created)
-		if err != nil {
-			return time.Time{}, false, nil
-		}
-	}
-	return t, true, nil
 }
 
 // planTrimTx returns oldest messages that would be removed to satisfy bounds

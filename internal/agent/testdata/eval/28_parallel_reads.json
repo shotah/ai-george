@@ -1,0 +1,30 @@
+{
+  "name": "parallel_reads",
+  "why": "Three files that don't depend on each other are one batch of reads, not three rounds.",
+  "inbound": "Read a.go, b.go and c.go and tell me what each one defines.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "result": "error: no such file\n",
+      "by_args": [
+        { "args_regex": "\\ba\\.go", "result": "package greet\n\nfunc Hello(name string) string { return \"hello \" + name }\n" },
+        { "args_regex": "\\bb\\.go", "result": "package greet\n\nfunc Bye(name string) string { return \"bye \" + name }\n" },
+        { "args_regex": "\\bc\\.go", "result": "package greet\n\nconst Version = \"1.2.0\"\n" }
+      ]
+    }
+  ],
+  "expect": {
+    "round_budget": 2,
+    "same_round": [
+      [
+        { "name": "fs__file_get", "args_regex": "\\ba\\.go" },
+        { "name": "fs__file_get", "args_regex": "\\bb\\.go" },
+        { "name": "fs__file_get", "args_regex": "\\bc\\.go" }
+      ]
+    ],
+    "tools_not_called": ["fs__file_patch", "self_note"],
+    "reply_regex": "(?s)Hello.*Bye.*Version"
+  }
+}

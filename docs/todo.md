@@ -13,7 +13,7 @@ goose stays where it is. Do not port its provider matrix, recipes, desktop, or s
 - [x] Fork `ai-gantry` into the new repo. Module, binary, module path, and user-facing strings become `george`.
 - [x] Leave the gantry name on the crane. Pendant, Cab, and gantree stay their own repos. george does not import them.
 - [x] Default channel is stdio. `george` with no `CHANNEL` set talks on stdin/stdout. A missing channel must not come up as Telegram.
-- [ ] Health stays an exit code. Nothing in this process listens.
+- [ ] Not Docker-based. george is a CLI you run in a repo, not a long-lived container. Config in `~/.config/george/`, data in `~/.local/share/george/`, root from the cwd. Detail: [coding-agent-plan.md](coding-agent-plan.md#where-it-lives-no-docker).
 
 ## 2. Pin the model the eval grades
 
@@ -60,10 +60,10 @@ Keep gantry’s two contracts.
 
 ## 5. Cut what grew up on Gemini
 
-Do this after the fork boots on stdio, before adding features. The planner and the mouths are why a local model stopped being the daily driver.
+Do this after the fork boots on stdio, before adding features. The planner and the mouths are why a local model stopped being the daily driver. The full cut list, phase order, and coding eval set are [coding-agent-plan.md](coding-agent-plan.md).
 
 - [ ] Remove Telegram, Discord, and Slack from the default path. Delete them once stdio is the product, or leave them behind a build tag you do not ship.
-- [ ] Remove the daily planner note (the long policy string, measured near 460 words). Small models drop the middle. Goldens will stay green while the model ignores a clause. That is the failure mode.
+- [x] Remove the daily planner note (the long policy string, measured near 460 words). Small models drop the middle. Goldens will stay green while the model ignores a clause. That is the failure mode. The session is a short pull-and-schedule note. The aims ladder, the todo essay, and the room redress are out of `DefaultDailyPlannerPrompt` and `plannerToolFirstNote`.
 - [ ] Remove the aims ledger, the todo-as-memory rows, and the pendant room frames (`[room]`, avatar, backdrop, theme) from the default prompt. They are the crane’s household. They are not the CLI runner.
 - [ ] Drop Gemini thought-signature handling unless that provider is still on the socket. One socket, the local one.
 - [ ] Re-read every fixture that was green on Flash. Retarget it at the pinned model. A miss is a sentence to shorten, not an expectation to loosen.
@@ -93,4 +93,4 @@ Each one is an extra completion, a second model, or a vague model id.
 
 Workspace read, patch, git, and shell are MCP binaries. The plan, the server ids, and the tool names are [coding-mcp.md](coding-mcp.md). Nouns are reserved in [mcp-naming.md](mcp-naming.md).
 
-New repos (`fs-mcp`, `git-mcp`, `shell-mcp`, later `github-mcp`). They are not features of this process, and they are not patches to the plugins under `repos/`.
+New repos (`fs-mcp`, `git-mcp`, `shell-mcp`, `github-mcp`). They are not features of this process, and they are not patches to the other plugins under `repos/`.

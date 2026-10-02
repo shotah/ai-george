@@ -12,20 +12,8 @@ import (
 	"time"
 
 	"github.com/shotah/george/internal/agent"
-	"github.com/shotah/george/internal/aims"
-	"github.com/shotah/george/internal/channel"
-	"github.com/shotah/george/internal/channel/discord"
-	"github.com/shotah/george/internal/channel/pendant"
-	"github.com/shotah/george/internal/channel/slack"
 	"github.com/shotah/george/internal/channel/stdio"
-	"github.com/shotah/george/internal/channel/telegram"
 	"github.com/shotah/george/internal/config"
-	"github.com/shotah/george/internal/cron"
-	"github.com/shotah/george/internal/doctor"
-	"github.com/shotah/george/internal/drain"
-	"github.com/shotah/george/internal/examples"
-	"github.com/shotah/george/internal/heartbeat"
-	"github.com/shotah/george/internal/logfwd"
 	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/mcpenable"
 	"github.com/shotah/george/internal/memory"
@@ -33,11 +21,10 @@ import (
 	"github.com/shotah/george/internal/provider"
 	"github.com/shotah/george/internal/selfnote"
 	"github.com/shotah/george/internal/session"
-	"github.com/shotah/george/internal/watch"
 	"github.com/shotah/george/internal/websearch"
 )
 
-// run boots config, persona, sessions, MCP host, memory, cron, watch, provider, agent, and channel.
+// run boots config, persona, sessions, MCP host, memory, provider, agent, and stdio.
 func run() int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -45,12 +32,11 @@ func run() int {
 		return 1
 	}
 
-	logger, errFwd := newLogger(cfg.LogLevel, cfg.TelegramErrorReporting)
+	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
 	logger.Info("george starting",
 		"version", version,
-		"channel", cfg.Channel,
 		"model", cfg.LLMModel,
 		"max_tokens", cfg.LLMMaxTokens,
 		"reasoning_effort", cfg.LLMReasoningEffort,
@@ -62,14 +48,9 @@ func run() int {
 		"memory_backend", cfg.MemoryBackend,
 		"self_notes_enabled", cfg.SelfNotesEnabled,
 		"web_search_enabled", cfg.WebSearchEnabled,
-		"cron_enabled", cfg.CronEnabled,
-		"watch_enabled", cfg.WatchEnabled,
-		"cron_tz", cfg.CronTZ,
-		"examples_qty", cfg.ExamplesQty,
 		"stream_replies", cfg.StreamReplies,
 		"show_thinking", cfg.ShowThinking,
 		"tool_trace", cfg.ToolTrace,
-		"telegram_error_reporting", cfg.TelegramErrorReporting,
 	)
 
 	removed, err := persona.SyncKernel(cfg.PersonaDir)
@@ -86,10 +67,10 @@ func run() int {
 	}
 	logger.Info("persona loaded", "chars", len(personaText))
 
-	tzName, tzLoc, tzSource := persona.ResolveTimezone(personaText, cfg.CronTZ)
+	tzName, tzLoc, tzSource := persona.ResolveTimezone(personaText, "Local")
 	logger.Info("human timezone", "tz", tzName, "source", tzSource)
 	if strings.EqualFold(tzName, "UTC") {
-		logger.Warn("human timezone is UTC; set Timezone in PERSONA.md (or CRON_TZ) to the human's IANA zone")
+		logger.Warn("human timezone is UTC; set Timezone in PERSONA.md (or TZ) to the human's IANA zone")
 	}
 
 	completer := provider.New(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel).
@@ -110,16 +91,8 @@ func run() int {
 	}()
 	logger.Info("session store ready", "path", filepath.Join(cfg.DataDir, "george.db"))
 
-	hb, err := heartbeat.OpenDB(sessions.DB())
-	if err != nil {
-		logger.Error("heartbeat open failed", "err", err)
-		return 1
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	go hb.Start(ctx, heartbeat.DefaultInterval, version, logger)
 
 	// Server `budget` counters share george.db so a monthly cap survives a
 	// redeploy; the day rolls at the human's midnight, not UTC's.
@@ -147,16 +120,12 @@ func run() int {
 			logger.Error("mcp host close failed", "err", err)
 		}
 	}()
-	if err := doctor.WriteSnapshot(cfg.DataDir, mcpHost.ServerHealth()); err != nil {
-		logger.Warn("doctor snapshot write failed", "err", err)
-	}
 
 	var (
 		memBackend memory.Memory
 		memBuiltin *memory.Builtin
 		hideServer string
 		tools      agent.Tools = mcpHost
-		consol     *memory.Consolidator
 	)
 
 	if cfg.MemoryEnabled {
@@ -179,10 +148,6 @@ func run() int {
 			memBackend = adapter
 			hideServer = server
 			logger.Info("memory ready", "backend", "mcp", "server", server)
-			if cfg.MemoryConsolidateMinutes > 0 {
-				logger.Warn("MEMORY_CONSOLIDATE_MINUTES ignored for MCP memory backend (builtin consolidator only)",
-					"minutes", cfg.MemoryConsolidateMinutes, "server", server)
-			}
 		default:
 			logger.Error("memory backend unsupported", "backend", cfg.MemoryBackend)
 			return 1
@@ -199,63 +164,6 @@ func run() int {
 			Other:         mcpHost,
 			HideMCPServer: hideServer,
 		}
-
-		if memBuiltin != nil && cfg.MemoryConsolidateMinutes > 0 {
-			consol = &memory.Consolidator{
-				Store:     memBuiltin,
-				Completer: completer,
-				Interval:  time.Duration(cfg.MemoryConsolidateMinutes) * time.Minute,
-				Logger:    logger,
-			}
-			go consol.Start(ctx)
-		}
-	}
-
-	var aimStore *aims.Store
-	if memBackend != nil {
-		aimStore, err = aims.OpenDB(sessions.DB(), tzLoc, memBackend)
-		if err != nil {
-			logger.Error("aims store open failed", "err", err)
-			return 1
-		}
-		if c, ok := tools.(memory.Composite); ok {
-			c.Memory.ForgetAim = aimStore.Forget
-			tools = c
-		}
-		tools = aims.Composite{Aims: aims.Tools{Store: aimStore}, Other: tools}
-		n := 0
-		if areas, aerr := aimStore.Areas(ctx); aerr == nil {
-			n = len(areas)
-		}
-		logger.Info("aims ready", "areas", n)
-	}
-
-	var cronStore *cron.Store
-	if cfg.CronEnabled {
-		cronStore, err = cron.OpenDB(sessions.DB(), cfg.CronMaxJobs)
-		if err != nil {
-			logger.Error("cron store open failed", "err", err)
-			return 1
-		}
-		tools = cron.Composite{
-			Cron:  cron.Tools{Store: cronStore, TZ: tzName, Memory: memBackend},
-			Other: tools,
-		}
-		logger.Info("cron ready", "tz", tzName, "max_jobs", cfg.CronMaxJobs)
-	}
-
-	var watchStore *watch.Store
-	if cfg.WatchEnabled {
-		watchStore, err = watch.OpenDB(sessions.DB(), cfg.WatchMax)
-		if err != nil {
-			logger.Error("watch store open failed", "err", err)
-			return 1
-		}
-		tools = watch.Composite{
-			Watch: watch.Tools{Store: watchStore, Floor: mcpHost.BudgetFloor},
-			Other: tools,
-		}
-		logger.Info("watch ready", "max", cfg.WatchMax)
 	}
 
 	var selfStore *selfnote.Store
@@ -355,33 +263,6 @@ func run() int {
 		}
 	}
 
-	if consol != nil {
-		consol.Location = tzLoc
-	}
-	var examplesSvc *examples.Service
-	var plannerSvc *cron.PlannerService
-	if cronStore != nil {
-		catalog := tools
-		examplesSvc = &examples.Service{
-			Store:     cronStore,
-			Qty:       cfg.ExamplesQty,
-			StartHour: cfg.ExamplesStartHour,
-			EndHour:   cfg.ExamplesEndHour,
-			TZ:        tzName,
-			Tools:     catalog.Tools,
-		}
-		plannerSvc = &cron.PlannerService{
-			Store: cronStore,
-			TZ:    tzName,
-			At:    cfg.DailyPlannerAt,
-		}
-	}
-
-	var waitSvc *cron.WaitService
-	if cronStore != nil {
-		waitSvc = &cron.WaitService{State: sessions, Jobs: cronStore, TZ: tzName}
-	}
-
 	agentOpts := agent.Options{
 		Persona:             personaText,
 		Completer:           completer,
@@ -395,23 +276,13 @@ func run() int {
 		Logger:              logger,
 		Location:            tzLoc,
 		TZName:              tzName,
-		CoalesceSettle:      time.Duration(cfg.CoalesceSettleMS) * time.Millisecond,
 		SpinupNotice:        time.Duration(cfg.SpinupNoticeMS) * time.Millisecond,
-		Consolidator:        consol,
-		MCPManifest:         cfg.MCPManifest,
-		Examples:            examplesSvc,
-		Planner:             plannerSvc,
-		Wait:                waitSvc,
 		HistoryStripFillers: cfg.HistoryStripFillers,
 		Enable:              enableStore,
 		EnableForce:         enableForce,
-		Aims:                aimStore,
 	}
 	if selfStore != nil {
 		agentOpts.SelfNotes = selfStore
-	}
-	if cronStore != nil {
-		agentOpts.Wakes = cronStore
 	}
 	ag, err := agent.New(agentOpts)
 	if err != nil {
@@ -420,7 +291,7 @@ func run() int {
 	}
 	if selfStore != nil {
 		// SELF.md sits in the persona prefix; reload after every agent write so
-		// the note takes effect without waiting for a SIGHUP.
+		// the note takes effect on the next turn.
 		selfStore.OnChange = func() {
 			text, err := persona.Load(cfg.PersonaDir)
 			if err != nil {
@@ -431,222 +302,19 @@ func run() int {
 			logger.Info("persona reloaded after self-note", "chars", len(text))
 		}
 	}
-	go watchPersonaReload(ctx, cfg.PersonaDir, ag, logger)
+	ch := stdio.New()
+	ch.StreamReplies = cfg.StreamReplies
 
-	ch, err := newChannel(cfg, logger, aimBoard(aimStore), todoBoard(memBuiltin, tzLoc))
-	if err != nil {
-		logger.Error("channel init failed", "err", err)
-		return 1
-	}
-	if room, ok := ch.(agent.RoomSource); ok {
-		// Pendant: the mailbox announces face / backdrop / theme changes on the
-		// crane socket; the agent stamps them as [room] when pendant-mcp is mounted.
-		ag.SetRoom(room)
-	}
-	if errFwd != nil {
-		if tg, ok := ch.(*telegram.Channel); ok {
-			errFwd.SetSender(logfwd.SenderFunc(tg.NotifyHTML))
-			logger.Info("telegram error reporting enabled", "level", cfg.TelegramErrorReporting)
-		}
-	}
-
-	gate := &drain.Gate{}
-	handle := gate.Handler(ag.Handle)
-
-	if cronStore != nil {
-		pusher, ok := ch.(channel.Pusher)
-		if !ok {
-			logger.Error("cron enabled but channel does not support Push")
-			return 1
-		}
-		runner := &cron.Runner{
-			Store:              cronStore,
-			Handle:             handle,
-			Pusher:             pusher,
-			Interval:           time.Duration(cfg.CronTickSeconds) * time.Second,
-			Logger:             logger,
-			Recent:             sessions,
-			ExamplesSkipRecent: time.Duration(cfg.ExamplesSkipRecentMinutes) * time.Minute,
-			Examples:           examplesSvc,
-			Memory:             memBackend,
-			Talk:               sessions,
-		}
-		if err := ensurePlannerJobs(ctx, plannerSvc, logger); err != nil {
-			logger.Error("daily planner ensure failed", "err", err)
-			return 1
-		}
-		if err := ensureExamplesJobs(ctx, cfg, examplesSvc, logger); err != nil {
-			logger.Error("examples ensure failed", "err", err)
-			return 1
-		}
-		go runner.Start(ctx)
-	}
-
-	if watchStore != nil {
-		pusher, ok := ch.(channel.Pusher)
-		if !ok {
-			logger.Error("watch enabled but channel does not support Push")
-			return 1
-		}
-		watchRunner := &watch.Runner{
-			Store:    watchStore,
-			Fetcher:  watch.FetchFunc(mcpHost.CallRaw),
-			Handle:   handle,
-			Pusher:   pusher,
-			Interval: time.Duration(cfg.CronTickSeconds) * time.Second,
-			Logger:   logger,
-		}
-		go watchRunner.Start(ctx)
-	}
-
-	runErr := ch.Run(ctx, handle)
-	// Finish the in-flight turn before deferred MCP Close kills children.
-	if !gate.Wait(drain.DefaultWait) {
-		logger.Warn("shutdown: in-flight turn still running after wait", "timeout", drain.DefaultWait.String())
-	}
-	if runErr != nil {
-		logger.Error("channel stopped", "err", runErr)
+	if runErr := ch.Run(ctx, ag.Handle); runErr != nil {
+		logger.Error("stdio stopped", "err", runErr)
 		return 1
 	}
 	logger.Info("george stopped")
 	return 0
 }
 
-func aimBoard(store *aims.Store) func(context.Context) ([]aims.Row, []aims.Link, error) {
-	if store == nil {
-		return nil
-	}
-	return func(ctx context.Context) ([]aims.Row, []aims.Link, error) {
-		areas, err := store.Areas(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		return store.Board(ctx, areas, time.Now())
-	}
-}
-
-// todoBoard renders the phone's pocket list from the builtin memory. MCP
-// memory has no live-row-by-prefix, so that install sends no todo frame.
-func todoBoard(mem *memory.Builtin, loc *time.Location) func(context.Context) ([]memory.TodoItem, error) {
-	if mem == nil {
-		return nil
-	}
-	return func(ctx context.Context) ([]memory.TodoItem, error) {
-		rows, err := mem.ListBySubjectPrefix(ctx, memory.KindFact, memory.SubjectTodoPrefix, 0)
-		if err != nil {
-			return nil, err
-		}
-		return memory.TodoBoard(rows, loc), nil
-	}
-}
-
-func newChannel(cfg *config.Config, logger *slog.Logger, board func(context.Context) ([]aims.Row, []aims.Link, error), todo func(context.Context) ([]memory.TodoItem, error)) (channel.Channel, error) {
-	switch cfg.Channel {
-	case config.ChannelStdio:
-		ch := stdio.New()
-		ch.StreamReplies = cfg.StreamReplies
-		return ch, nil
-	case config.ChannelTelegram:
-		return telegram.New(telegram.Config{
-			Token:         cfg.TelegramBotToken,
-			AllowedUsers:  cfg.TelegramAllowedUsers,
-			Logger:        logger,
-			StreamReplies: cfg.StreamReplies,
-			ShowThinking:  cfg.ShowThinking,
-		})
-	case config.ChannelDiscord:
-		return discord.New(discord.Config{
-			Token:         cfg.DiscordBotToken,
-			AllowedUsers:  cfg.DiscordAllowedUsers,
-			Logger:        logger,
-			StreamReplies: cfg.StreamReplies,
-		})
-	case config.ChannelSlack:
-		return slack.New(slack.Config{
-			BotToken:      cfg.SlackBotToken,
-			AppToken:      cfg.SlackAppToken,
-			AllowedUsers:  cfg.SlackAllowedUsers,
-			Logger:        logger,
-			StreamReplies: cfg.StreamReplies,
-		})
-	case config.ChannelPendant:
-		return pendant.New(pendant.Config{
-			MailboxURL:    cfg.PendantMailboxURL,
-			Bearer:        cfg.PendantBearer,
-			AllowedUsers:  cfg.PendantAllowedUsers,
-			Logger:        logger,
-			StreamReplies: cfg.StreamReplies,
-			Board:         board,
-			Todo:          todo,
-		})
-	default:
-		return nil, fmt.Errorf("unknown channel %q", cfg.Channel)
-	}
-}
-
-// ensurePlannerJobs installs the once-a-day planning session (default 07:10).
-// DAILY_PLANNER_AT is the operator clock; /planner can move it. One job per process.
-func ensurePlannerJobs(ctx context.Context, svc *cron.PlannerService, log *slog.Logger) error {
-	if svc == nil || !svc.ProactiveEnabled() {
-		return nil
-	}
-	return bindPlanner(ctx, svc, log, cron.Delivery{SessionID: channel.AgentSession})
-}
-
-func bindPlanner(ctx context.Context, svc *cron.PlannerService, log *slog.Logger, delivery cron.Delivery) error {
-	job, created, err := svc.EnsureFor(ctx, delivery)
-	if err != nil {
-		return err
-	}
-	if job.ID == 0 {
-		log.Info("daily planner skipped (session opted out)", "session_id", delivery.SessionID)
-		return nil
-	}
-	log.Info("daily planner ready",
-		"created", created,
-		"id", job.ID,
-		"session_id", delivery.SessionID,
-		"next_run", job.NextRunAt.UTC().Format(time.RFC3339),
-		"expr", job.Expr,
-	)
-	return nil
-}
-
-// ensureExamplesJobs installs on-by-default capability-example pings when
-// EXAMPLES_QTY is set (empty/"0" = off). One planner per process.
-func ensureExamplesJobs(ctx context.Context, cfg *config.Config, svc *examples.Service, log *slog.Logger) error {
-	if svc == nil || !svc.ProactiveEnabled() {
-		return nil
-	}
-	// Validate qty early so bad EXAMPLES_QTY fails boot clearly.
-	if _, _, err := cron.ParseQty(strings.TrimSpace(cfg.ExamplesQty)); err != nil {
-		return fmt.Errorf("EXAMPLES_QTY: %w", err)
-	}
-
-	delivery := cron.Delivery{SessionID: channel.AgentSession}
-	job, created, err := svc.EnsureFor(ctx, delivery)
-	if err != nil {
-		return err
-	}
-	if job.ID == 0 {
-		log.Info("examples skipped (session opted out)",
-			"session_id", delivery.SessionID)
-		return nil
-	}
-	log.Info("examples job ready",
-		"created", created,
-		"id", job.ID,
-		"session_id", delivery.SessionID,
-		"next_run", job.NextRunAt.UTC().Format(time.RFC3339),
-		"expr", job.Expr,
-	)
-	return nil
-}
-
-// newLogger builds the process logger. When TELEGRAM_ERROR_REPORTING is
-// error|warn, the returned *logfwd.Handler tees those records once SetSender
-// is attached (after the Telegram channel is constructed).
-func newLogger(level, errorReporting string) (*slog.Logger, *logfwd.Handler) {
+// newLogger builds the process logger.
+func newLogger(level string) *slog.Logger {
 	var lv slog.Level
 	switch level {
 	case "debug":
@@ -658,12 +326,6 @@ func newLogger(level, errorReporting string) (*slog.Logger, *logfwd.Handler) {
 	default:
 		lv = slog.LevelInfo
 	}
-	// stderr keeps the stdio REPL on stdout readable; docker logs still captures both.
-	base := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lv})
-	minLevel, enabled, err := logfwd.ParseLevel(errorReporting)
-	if err != nil || !enabled {
-		return slog.New(base), nil
-	}
-	fwd := logfwd.New(base, logfwd.Options{MinLevel: minLevel})
-	return slog.New(fwd), fwd
+	// stderr keeps the stdio REPL on stdout readable.
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
 }

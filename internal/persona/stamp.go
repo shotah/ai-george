@@ -14,12 +14,19 @@ func stampSELF(raw string) string {
 	return selfnote.Stamp(raw)
 }
 
+// retiredSections were kernel-owned in the assistant build. An old
+// PERSONA.md still carries them; sync drops them so the prompt does not
+// teach tokens the harness no longer reads.
+var retiredSections = []string{"## Location pins", "## Follow-up", "## Reactions"}
+
 func stampPersona(raw string) string {
 	raw = strings.TrimSpace(raw)
+	for _, heading := range retiredSections {
+		if start, end, ok := sectionSpan(raw, heading); ok {
+			raw = strings.TrimSpace(raw[:start] + raw[end:])
+		}
+	}
 	raw = upsertSection(raw, "## Self-notes", selfnote.RulesSection)
-	raw = upsertSection(raw, "## Location pins", selfnote.LocationSection)
-	raw = upsertSection(raw, "## Follow-up", WaitSection)
-	raw = upsertSection(raw, "## Reactions", ReactSection)
 	return strings.TrimSpace(raw)
 }
 
@@ -70,7 +77,7 @@ func nextHeading(raw string) int {
 
 // SyncKernel migrates leftover SOUL/RULES/USER/TOOLS into PERSONA.md when that
 // file is missing, deletes those legacy files, then writes kernel sections
-// (Self-notes, Location pins, Follow-up) into PERSONA.md. Best-effort: a read-only mount
+// (Self-notes) into PERSONA.md. Best-effort: a read-only mount
 // leaves the prompt stamp (Load) in place and returns the write/remove error.
 func SyncKernel(dir string) (removed []string, err error) {
 	removed, err = reconcileLegacy(dir)

@@ -1,0 +1,29 @@
+{
+  "name": "parallel_checks",
+  "why": "Two independent checks run in one batch, and the reply reports the one that failed. They asked whether, not for a fix.",
+  "inbound": "Run go vet ./... and go test ./... and tell me whether each one passed.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "shell__command_run",
+      "result": "exit 127\ncommand not found\n",
+      "by_args": [
+        { "args_regex": "go vet", "result": "exit 0\n" },
+        { "args_regex": "go test", "result": "exit 1\n--- FAIL: TestHello (0.00s)\n    greet_test.go:9: Hello(\"bob\") = \"hello bob\", want \"hello, bob\"\nFAIL\nFAIL\texample.com/greet\t0.002s\nFAIL\n" }
+      ]
+    }
+  ],
+  "expect": {
+    "round_budget": 2,
+    "same_round": [
+      [
+        { "name": "shell__command_run", "args_regex": "go vet" },
+        { "name": "shell__command_run", "args_regex": "go test" }
+      ]
+    ],
+    "tools_not_called": ["fs__file_patch", "git__commit_create", "self_note"],
+    "reply_regex": "(?i)TestHello|fail",
+    "reply_not_regex": "(?i)\\b(both|all)\\b[^.]*\\bpass"
+  }
+}

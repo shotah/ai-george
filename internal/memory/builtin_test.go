@@ -2,8 +2,6 @@ package memory_test
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -124,62 +122,6 @@ func TestBuiltin_HydrateAndForgetQuery(t *testing.T) {
 	}
 }
 
-func TestBuiltin_ConsolidationDedupes(t *testing.T) {
-	ctx := context.Background()
-	b, err := memory.Open(filepath.Join(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = b.Close() }()
-
-	ep1, err := b.Store(ctx, memory.KindEpisode, "chris", "likes espresso")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ep2, err := b.Store(ctx, memory.KindEpisode, "chris", "drinks espresso every morning")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	list, err := b.ListUnconsolidatedEpisodes(ctx, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 2 {
-		t.Fatalf("episodes = %d", len(list))
-	}
-
-	neu, err := b.StoreConsolidated(ctx, memory.KindPreference, "chris", "drinks espresso every morning")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Supersede(ctx, ep1.ID, neu.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.MarkConsolidated(ctx, []int64{ep1.ID, ep2.ID}); err != nil {
-		t.Fatal(err)
-	}
-
-	list, err = b.ListUnconsolidatedEpisodes(ctx, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 0 {
-		t.Fatalf("expected no unconsolidated, got %#v", list)
-	}
-
-	// Superseded episode should not appear in active recall.
-	hits, err := b.Recall(ctx, "espresso", 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range hits {
-		if h.ID == ep1.ID {
-			t.Fatalf("superseded episode still recalled: %#v", h)
-		}
-	}
-}
-
 func TestBuiltin_StoreSupersedesSameSubject(t *testing.T) {
 	ctx := context.Background()
 	b, err := memory.Open(t.TempDir())
@@ -222,11 +164,6 @@ func TestBuiltin_StoreSupersedesSameSubject(t *testing.T) {
 			t.Fatalf("superseded row still hydrated: %#v", e)
 		}
 	}
-	pin, ok := memory.ResolvePin(ctx, b, old.ID, "")
-	if !ok || pin.ID != neu.ID {
-		t.Fatalf("ResolvePin should walk to live row, got ok=%v %#v", ok, pin)
-	}
-
 	ep1, err := b.Store(ctx, memory.KindEpisode, "chris", "note one")
 	if err != nil {
 		t.Fatal(err)
@@ -238,45 +175,9 @@ func TestBuiltin_StoreSupersedesSameSubject(t *testing.T) {
 	if ep1.ID == ep2.ID {
 		t.Fatal("episodes with the same subject must not collapse")
 	}
-	list, err := b.ListUnconsolidatedEpisodes(ctx, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) < 2 {
-		t.Fatalf("episodes collapsed: %#v", list)
-	}
-}
-
-func TestHours_ParseAndAsleep(t *testing.T) {
-	h := memory.ParseHours("sleep: 23:00-07:00\nwork: 09:00-17:00\nquiet: (none)\n")
-	if !h.Known() || h.SleepStart != 23*60 || h.SleepEnd != 7*60 {
-		t.Fatalf("%+v", h)
-	}
-	if h.WorkStart != 9*60 || h.WorkEnd != 17*60 {
-		t.Fatalf("work %+v", h)
-	}
-	loc := time.UTC
-	asleep := time.Date(2026, 8, 25, 2, 0, 0, 0, loc)
-	awake := time.Date(2026, 8, 25, 11, 0, 0, 0, loc)
-	if !h.AsleepAt(asleep) {
-		t.Fatal("02:00 should be asleep")
-	}
-	if h.AsleepAt(awake) {
-		t.Fatal("11:00 should not be asleep (work is not DND)")
-	}
-	edge := time.Date(2026, 8, 25, 7, 0, 0, 0, loc)
-	if h.AsleepAt(edge) {
-		t.Fatal("07:00 is exclusive end")
-	}
-	unknown := memory.ParseHours("")
-	if unknown.Known() || unknown.AsleepAt(asleep) {
-		t.Fatal("unknown hours must not count as asleep")
-	}
-	if !strings.Contains(unknown.Footer(), "unknown") {
-		t.Fatalf("footer=%q", unknown.Footer())
-	}
-	if !strings.Contains(h.Footer(), "sleep 23:00-07:00") || !strings.Contains(h.Footer(), "work 09:00-17:00") {
-		t.Fatalf("footer=%q", h.Footer())
+	first, err := b.Get(ctx, ep1.ID)
+	if err != nil || first.SupersededBy != nil {
+		t.Fatalf("episodes collapsed: %#v err=%v", first, err)
 	}
 }
 
@@ -309,41 +210,5 @@ func TestTools_CallRoundTrip(t *testing.T) {
 	}
 	if out == "" {
 		t.Fatal("empty forget result")
-	}
-}
-
-func TestListBySubjectPrefix(t *testing.T) {
-	b, err := memory.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = b.Close() })
-	ctx := context.Background()
-	if _, err := b.Store(ctx, memory.KindInsight, "aim/training", "3x gym"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.Store(ctx, memory.KindInsight, "aim/spanish", "B1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.Store(ctx, memory.KindFact, "waiting/dentist", "book"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.Store(ctx, memory.KindPreference, "pref/hours", "sleep: 22:00-06:00"); err != nil {
-		t.Fatal(err)
-	}
-	aims, err := b.ListBySubjectPrefix(ctx, memory.KindInsight, memory.SubjectAimPrefix, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(aims) != 2 {
-		t.Fatalf("aims=%d", len(aims))
-	}
-	wait, err := b.ListBySubjectPrefix(ctx, memory.KindFact, memory.SubjectWaitingPrefix, 5)
-	if err != nil || len(wait) != 1 || wait[0].Subject != "waiting/dentist" {
-		t.Fatalf("waiting %+v err=%v", wait, err)
-	}
-	none, err := b.ListBySubjectPrefix(ctx, memory.KindInsight, "nope/", 5)
-	if err != nil || len(none) != 0 {
-		t.Fatalf("none %+v err=%v", none, err)
 	}
 }

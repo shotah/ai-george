@@ -1,0 +1,37 @@
+{
+  "name": "edit_then_check",
+  "why": "A coding turn reads the file, then patches that one file, then runs the check, then shows git status. Each step waits on the one before it.",
+  "inbound": "greet.txt says hi. Change that line to hello, then run wc -l greet.txt, then show git status.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "results": ["hi\n", "hello\n"]
+    },
+    {
+      "name": "fs__file_patch",
+      "result": "patched greet.txt\n"
+    },
+    {
+      "name": "shell__command_run",
+      "result": "exit 0\n1 greet.txt\n"
+    },
+    {
+      "name": "git__status_get",
+      "result": "On branch main\nChanges not staged for commit:\n\tmodified:   greet.txt\n"
+    }
+  ],
+  "expect": {
+    "round_budget": 5,
+    "tools_called": [
+      { "name": "fs__file_get", "args_regex": "greet\\.txt" },
+      { "name": "fs__file_patch", "args_regex": "hello" },
+      { "name": "shell__command_run", "args_regex": "wc.*greet\\.txt" },
+      { "name": "git__status_get" }
+    ],
+    "tools_not_called": ["self_note"],
+    "order": ["fs__file_get", "fs__file_patch", "shell__command_run", "git__status_get"],
+    "reply_regex": "(?i)hello"
+  }
+}

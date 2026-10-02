@@ -9,7 +9,7 @@ a local dialect.
 mcp-beam, mcp-go-math, mcp-gemini-search, flights-search-mcp, rentals-search-mcp,
 cars-search-mcp, feeds-mcp, twitter-mcp, google-maps-mcp, boards-mcp,
 image-generation-mcp, pendant-mcp, and future MCPs. The local coding
-loop (planned) adds fs-mcp, git-mcp, shell-mcp, and later github-mcp —
+loop adds fs-mcp, git-mcp, shell-mcp, and github-mcp —
 see [coding-mcp.md](coding-mcp.md).
 **Why it matters:** small models (Qwen) pick tools by **name tokens +
 description**. Host closest-match repair scores **name tokens only** and
@@ -97,7 +97,7 @@ and the live catalog, not in `PERSONA.md`.
    | Workspace files | `file_` | fs (`file_list`, `file_get`, `file_search`, `file_create`, `file_patch`; not `fs_*`. `file_patch` keeps the token `patch` because `update` is stripped. Core stays five tools so a tied `file` hint lists all of them) |
    | Git working tree | `status_` / `diff_` / `commits_` / `stage_` / `commit_` | git (`status_get`, `diff_get`, `commits_list`, `stage_update`, `commit_create`; not `git_*`. `diff_*` is show-only; applying a hunk is `file_patch`) |
    | Workspace shell | `command_` | shell (`command_run`; `run` stays, because `create` is stripped and models emit `run`) |
-   | GitHub issues / pulls / checks / remote bodies | `issues_` / `pulls_` / `checks_` / `contents_` | github (later; `account_get` is the shared account noun. Not `file_*`, not `diff_*`, not `link_*`) |
+   | GitHub issues / pulls / checks / remote bodies | `issues_` / `pulls_` / `checks_` / `contents_` | github (`account_get` is the shared account noun. Not `file_*`, not `diff_*`, not `link_*`) |
 
 6. **Descriptions sell the intent**
    First sentence = what the agent wants (“Search YouTube videos…”, “List
@@ -144,7 +144,7 @@ and the live catalog, not in `PERSONA.md`.
 | `pendant` | `avatar_update`, `backdrop_update`, `theme_list` | `pendant__avatar_update` |
 | `boards` | `roster_list`, `notices_list`, `challenges_create` | `boards__roster_list` |
 
-Planned local coding agent ([coding-mcp.md](coding-mcp.md)). Not granted yet:
+Local coding agent ([coding-mcp.md](coding-mcp.md)). `fs`, `git`, `shell`, and `github` are granted.
 
 | Server id (`mcp.toml`) | Example tools | Host calls |
 | --- | --- | --- |

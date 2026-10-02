@@ -4,7 +4,6 @@ package mcp
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/shotah/george/internal/channel"
 	"github.com/shotah/george/internal/provider"
 )
 
@@ -780,13 +778,9 @@ func (c *sdkConn) CallTool(ctx context.Context, name string, arguments map[strin
 	if err != nil {
 		return "", err
 	}
-	text := contentToString(res, false)
+	text := contentToString(res)
 	if res.IsError {
 		return "", classifiedToolError(text)
-	}
-	if sink := channel.PhotoSinkFrom(ctx); sink != nil && isChatPhotoTool(name) {
-		sink.Add(imagesFromResult(res)...)
-		text = contentToString(res, true)
 	}
 	return text, nil
 }
@@ -813,7 +807,7 @@ func schemaToMap(schema any) (map[string]any, error) {
 	return m, nil
 }
 
-func contentToString(res *mcpsdk.CallToolResult, delivered bool) string {
+func contentToString(res *mcpsdk.CallToolResult) string {
 	if res == nil {
 		return ""
 	}
@@ -845,46 +839,10 @@ func contentToString(res *mcpsdk.CallToolResult, delivered bool) string {
 			parts = append(parts, string(b))
 		}
 	}
-	// Tell the model the picture already reached the user — otherwise it only
-	// sees {"bytes":…} and may claim it cannot show images. Appended last so
-	// the summary (and source_path) still survives TOOL_RESULT_MAX_CHARS.
-	// avatar_get ImageContent is not a chat photo — skip this line.
-	if delivered && images > 0 {
-		parts = append(parts, fmt.Sprintf("[image] %d picture(s) delivered to chat", images))
-	} else if len(parts) == 0 && images > 0 {
+	if len(parts) == 0 && images > 0 {
 		return fmt.Sprintf("[image] %d picture(s)", images)
 	}
 	return strings.Join(parts, "\n")
-}
-
-// isChatPhotoTool reports tools whose ImageContent should become a mouth
-// SendPhoto / mailbox images[] bubble. Face/backdrop GET is a room blob.
-func isChatPhotoTool(name string) bool {
-	switch name {
-	case "photo_generate", "photo_edit":
-		return true
-	default:
-		return false
-	}
-}
-
-func imagesFromResult(res *mcpsdk.CallToolResult) []string {
-	if res == nil {
-		return nil
-	}
-	var out []string
-	for _, c := range res.Content {
-		img, ok := c.(*mcpsdk.ImageContent)
-		if !ok || len(img.Data) == 0 {
-			continue
-		}
-		mime := strings.TrimSpace(img.MIMEType)
-		if mime == "" {
-			mime = "image/png"
-		}
-		out = append(out, "data:"+mime+";base64,"+base64.StdEncoding.EncodeToString(img.Data))
-	}
-	return out
 }
 
 type lineLogger struct {

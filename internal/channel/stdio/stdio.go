@@ -35,16 +35,6 @@ func New() *Channel {
 	}
 }
 
-// Push prints a proactive cron reply to the REPL output.
-func (c *Channel) Push(_ context.Context, msg channel.Outbound) error {
-	out := c.Out
-	if out == nil {
-		out = os.Stdout
-	}
-	_, err := fmt.Fprintf(out, "\n[cron] %s\n> ", msg.Text)
-	return err
-}
-
 // Run reads lines, invokes handle, and prints replies until EOF or ctx cancel.
 func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
 	in := c.In
@@ -96,7 +86,6 @@ func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
 			handleCtx = channel.WithReplyWriter(ctx, stream)
 		}
 
-		handleCtx, sink := channel.AttachPhotoSink(handleCtx)
 		reply, err := handle(handleCtx, channel.Message{
 			SessionID: sessionID,
 			UserID:    userID,
@@ -111,16 +100,10 @@ func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
 		}
 		if stream != nil && stream.Started() {
 			_ = stream.Finish(ctx, reply)
-			if n := len(sink.URLs()); n > 0 {
-				_, _ = fmt.Fprintf(out, "[photo] %d image(s)\n", n)
-			}
 			continue
 		}
 		if reply != "" {
 			_, _ = fmt.Fprintln(out, reply)
-		}
-		if n := len(sink.URLs()); n > 0 {
-			_, _ = fmt.Fprintf(out, "[photo] %d image(s)\n", n)
 		}
 	}
 }

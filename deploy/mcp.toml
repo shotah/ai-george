@@ -8,3 +8,37 @@
 # tools   = ["tool_a", "tool_b"]
 # # exclude = ["raw_*"]
 # # tools_prefix = "ex"
+
+# Coding agent. --root matches the compose /workspace mount.
+# github-mcp reads GITHUB_TOKEN or GH_TOKEN from the process env.
+
+[[server]]
+name    = "fs"
+command = "fs-mcp"
+args    = ["--root", "/workspace", "--tool-tier", "core"]
+force   = true
+download_tag = "latest"
+download_url = "https://github.com/shotah/fs-mcp/releases/download/{tag}/fs-mcp_{version}_{os}_{arch}.tar.gz"
+
+[[server]]
+name    = "git"
+command = "git-mcp"
+args    = ["--root", "/workspace", "--tool-tier", "core"]
+force   = true
+download_tag = "latest"
+download_url = "https://github.com/shotah/git-mcp/releases/download/{tag}/git-mcp_{version}_{os}_{arch}.tar.gz"
+
+[[server]]
+name    = "shell"
+command = "shell-mcp"
+args    = ["--root", "/workspace"]
+force   = true
+download_tag = "latest"
+download_url = "https://github.com/shotah/shell-mcp/releases/download/{tag}/shell-mcp_{version}_{os}_{arch}.tar.gz"
+
+[[server]]
+name    = "github"
+command = "github-mcp"
+force   = true
+download_tag = "latest"
+download_url = "https://github.com/shotah/github-mcp/releases/download/{tag}/github-mcp_{version}_{os}_{arch}.tar.gz"

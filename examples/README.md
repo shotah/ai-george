@@ -8,7 +8,7 @@ The binary talks on stdin/stdout (`CHANNEL=stdio` when unset). Persona,
 | --- | --- |
 | [`persona/PERSONA.example.md`](persona/PERSONA.example.md) | Who it should be |
 | [`persona/SELF.example.md`](persona/SELF.example.md) | Agent-written voice. Seed only; the running copy is `SELF.md` |
-| [`mcp.toml.example`](mcp.toml.example) | Optional MCP grants. Empty until you uncomment a server |
+| [`mcp.toml.example`](mcp.toml.example) | Optional MCP grants. The coding loop (`fs`, `git`, `shell`, `github`) is listed. The other servers stay commented |
 | [`env.example`](env.example) | `LLM_*` and the rest of the process env |
 
 `examples/embed.go` bakes those four into the binary. `george init` writes

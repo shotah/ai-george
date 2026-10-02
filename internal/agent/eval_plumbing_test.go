@@ -2,14 +2,15 @@ package agent_test
 
 // Plumbing for the behavioral eval, run in `go test ./...` with a scripted
 // Completer. Pins that the fixtures are well-formed and that the harness
-// records what it should: tool calls through the recorder, cron jobs in the
-// store, [wait] via the wait service, mcp_enable filtering, planner wake text.
+// records what it should: tool calls through the recorder, mcp_enable
+// filtering, sequenced tool results, scripted rounds, memory rows.
 // The live model is eval_integration_test.go.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -18,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shotah/george/internal/cron"
 	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/provider"
 )
@@ -79,15 +79,6 @@ func hasToolDef(defs []provider.ToolDef, name string) bool {
 	return false
 }
 
-func lastUserText(req provider.Request) string {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == provider.RoleUser {
-			return req.Messages[i].Content
-		}
-	}
-	return ""
-}
-
 func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 	t.Helper()
 	for _, re := range []string{e.ReplyRegex, e.ReplyNot} {
@@ -98,7 +89,14 @@ func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 			t.Errorf("%s: bad regex %q: %v", name, re, err)
 		}
 	}
-	for _, c := range e.ToolsCalled {
+	calls := append([]evalCallExpect(nil), e.ToolsCalled...)
+	for _, batch := range e.SameRound {
+		if len(batch) < 2 {
+			t.Errorf("%s: same_round entry needs at least two calls", name)
+		}
+		calls = append(calls, batch...)
+	}
+	for _, c := range calls {
 		if c.ArgsRegex == "" {
 			continue
 		}
@@ -113,9 +111,6 @@ func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 
 func TestEvalFixtures_WellFormed(t *testing.T) {
 	fixtures := loadEvalFixtures(t, evalFixtureDir)
-	if len(fixtures) < 7 {
-		t.Fatalf("scenario table has 7 rows; %d fixtures", len(fixtures))
-	}
 	liveServers := evalLiveServers(t)
 	seen := map[string]bool{}
 	for _, fx := range fixtures {
@@ -126,34 +121,30 @@ func TestEvalFixtures_WellFormed(t *testing.T) {
 		if fx.Why == "" {
 			t.Errorf("%s: why is empty", fx.Name)
 		}
-		if fx.Inbound == "" && !fx.Planner && fx.Cron == "" {
-			t.Errorf("%s: needs inbound, planner, or cron", fx.Name)
+		if fx.Inbound == "" {
+			t.Errorf("%s: needs inbound", fx.Name)
 		}
 		for _, tl := range fx.Tools {
 			if !strings.Contains(tl.Name, "__") {
 				t.Errorf("%s: canned tool %q needs an MCP prefix (server__name)", fx.Name, tl.Name)
 			}
+			if tl.Result != "" && len(tl.Results) > 0 {
+				t.Errorf("%s: %s sets both result and results", fx.Name, tl.Name)
+			}
+			for _, ba := range tl.ByArgs {
+				if _, err := regexp.Compile(ba.ArgsRegex); ba.ArgsRegex == "" || err != nil {
+					t.Errorf("%s: %s by_args regex %q: %v", fx.Name, tl.Name, ba.ArgsRegex, err)
+				}
+			}
+		}
+		for i, round := range fx.Script {
+			if (len(round.ToolCalls) == 0) == (round.Content == "") {
+				t.Errorf("%s: script[%d] needs tool_calls or content, not both or neither", fx.Name, i)
+			}
 		}
 		if fx.Now != "" {
 			if _, err := time.Parse(time.RFC3339, fx.Now); err != nil {
 				t.Errorf("%s: now %q: %v", fx.Name, fx.Now, err)
-			}
-		}
-		if fx.Next != nil {
-			if !fx.Planner {
-				t.Errorf("%s: next morning is a second planner turn", fx.Name)
-			}
-			if _, err := time.Parse(time.RFC3339, fx.Next.Now); err != nil {
-				t.Errorf("%s: next.now %q: %v", fx.Name, fx.Next.Now, err)
-			}
-			if !fx.Next.DifferentLine {
-				t.Errorf("%s: next morning must set different_line", fx.Name)
-			}
-			compileEvalRegexes(t, fx.Name+" next", fx.Next.Expect)
-		}
-		for i, row := range fx.Ledger {
-			if row.What == "" || len(row.Aims) == 0 {
-				t.Errorf("%s: ledger[%d] needs what and aims", fx.Name, i)
 			}
 		}
 		for _, server := range fx.ToolsFrom {
@@ -175,15 +166,15 @@ func TestEvalFixtures_WellFormed(t *testing.T) {
 // call, other servers pass through hand-written.
 func TestMergeLiveTools(t *testing.T) {
 	live := []provider.ToolDef{
-		{Name: "rentals__listings_search", Description: "THRIFTY: one call", Parameters: map[string]any{"type": "object", "properties": map[string]any{"neighborhood": map[string]any{"type": "string"}}}},
-		{Name: "rentals__account_get", Description: "FREE counter"},
-		{Name: "flights__offers_search", Description: "not asked for"},
+		{Name: "fs__file_get", Description: "read one file", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}},
+		{Name: "fs__file_patch", Description: "patch one file"},
+		{Name: "git__status_get", Description: "not asked for"},
 	}
 	fixture := []evalTool{
-		{Name: "rentals__listings_search", Result: `{"count":1}`},
-		{Name: "google__calendar_list_events", Description: "hand-written", Result: "[]"},
+		{Name: "fs__file_get", Result: "hi\n", ByArgs: []evalArgsResult{{ArgsRegex: `a\.go`, Result: "package a"}}},
+		{Name: "shell__command_run", Description: "hand-written", Results: []string{"exit 1\n", "exit 0\n"}},
 	}
-	got, err := mergeLiveTools(live, []string{"rentals"}, fixture)
+	got, err := mergeLiveTools(live, []string{"fs"}, fixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,96 +182,54 @@ func TestMergeLiveTools(t *testing.T) {
 	for _, tl := range got {
 		names = append(names, tl.Name)
 	}
-	if want := []string{"google__calendar_list_events", "rentals__account_get", "rentals__listings_search"}; !slices.Equal(names, want) {
+	if want := []string{"fs__file_get", "fs__file_patch", "shell__command_run"}; !slices.Equal(names, want) {
 		t.Fatalf("names=%v want %v", names, want)
 	}
 	for _, tl := range got {
 		switch tl.Name {
-		case "rentals__listings_search":
-			if tl.Description != "THRIFTY: one call" || tl.Params == nil || tl.Result != `{"count":1}` {
+		case "fs__file_get":
+			if tl.Description != "read one file" || tl.Params == nil || tl.Result != "hi\n" || len(tl.ByArgs) != 1 {
 				t.Fatalf("live def + canned result not merged: %+v", tl)
 			}
-		case "rentals__account_get":
+		case "fs__file_patch":
 			if tl.Result != "{}" {
 				t.Fatalf("uncanned live tool should default to {}: %+v", tl)
 			}
-		case "google__calendar_list_events":
-			if tl.Description != "hand-written" {
+		case "shell__command_run":
+			if tl.Description != "hand-written" || len(tl.Results) != 2 {
 				t.Fatalf("other server should pass through: %+v", tl)
 			}
 		}
 	}
 
-	_, err = mergeLiveTools(live, []string{"rentals"}, []evalTool{{Name: "rentals__search", Result: "[]"}})
-	if err == nil || !strings.Contains(err.Error(), `"rentals__search" is not in the live rentals catalog`) || !strings.Contains(err.Error(), "rentals__listings_search") {
+	_, err = mergeLiveTools(live, []string{"fs"}, []evalTool{{Name: "fs__file_read", Result: "x"}})
+	if err == nil || !strings.Contains(err.Error(), `"fs__file_read" is not in the live fs catalog`) || !strings.Contains(err.Error(), "fs__file_get") {
 		t.Fatalf("renamed tool should fail with the live names: %v", err)
 	}
-	if _, err := mergeLiveTools(live, []string{"garmin"}, nil); err == nil || !strings.Contains(err.Error(), "no live tools") {
+	if _, err := mergeLiveTools(live, []string{"github"}, nil); err == nil || !strings.Contains(err.Error(), "no live tools") {
 		t.Fatalf("unconnected server should fail: %v", err)
 	}
 }
 
-// max_calls: the metered-API gate counts calls matching name (+ args).
+// max_calls counts calls matching name (+ args).
 func TestCheckEval_MaxCalls(t *testing.T) {
 	two := 2
 	one := 1
 	out := evalOutcome{Calls: []evalCall{
-		{Name: "rentals__listings_search", Args: `{"neighborhood":"Ballard"}`},
-		{Name: "rentals__listings_search", Args: `{"neighborhood":"Fremont"}`},
-		{Name: "rentals__account_get", Args: `{}`},
+		{Name: "fs__file_patch", Args: `{"path":"a.go"}`},
+		{Name: "fs__file_patch", Args: `{"path":"b.go"}`},
+		{Name: "fs__file_get", Args: `{}`},
 	}}
-	if fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "rentals__listings_search", MaxCalls: &two}}}); len(fails) != 0 {
+	if fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "fs__file_patch", MaxCalls: &two}}}); len(fails) != 0 {
 		t.Fatalf("two calls within max 2: %v", fails)
 	}
-	fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "rentals__listings_search", MaxCalls: &one}}})
-	if len(fails) != 1 || fails[0] != "tool rentals__listings_search called 2 times, max 1" {
+	fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "fs__file_patch", MaxCalls: &one}}})
+	if len(fails) != 1 || fails[0] != "tool fs__file_patch called 2 times, max 1" {
 		t.Fatalf("fails=%v", fails)
 	}
 	// ArgsRegex narrows the count.
-	if fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "rentals__listings_search", ArgsRegex: "Ballard", MaxCalls: &one}}}); len(fails) != 0 {
-		t.Fatalf("one Ballard call within max 1: %v", fails)
-	}
-}
-
-// prices_from_tools: a "$N" the tools never returned is an invented fact.
-func TestCheckEval_PricesFromTools(t *testing.T) {
-	yes := true
-	calls := []evalCall{{Name: "flights__offers_search", Result: `{"offers":[{"price":218},{"price":189}],"usage":{"searches_left":88}}`}}
-	ok := evalOutcome{Reply: "Alaska at $189 or United for $218.00 — both nonstop.", Calls: calls}
-	if fails := checkEval(context.Background(), ok, evalExpect{PricesFromTools: &yes}); len(fails) != 0 {
-		t.Fatalf("real prices flagged: %v", fails)
-	}
-	bad := evalOutcome{Reply: "Sep 25 is cheaper: $139 on Alaska and $ 149 on United; Sep 18 is $189.", Calls: calls}
-	fails := checkEval(context.Background(), bad, evalExpect{PricesFromTools: &yes})
-	if len(fails) != 2 || fails[0] != "invented price $139 (in no tool result or input)" || fails[1] != "invented price $149 (in no tool result or input)" {
-		t.Fatalf("fails=%v", fails)
-	}
-	// Commas on either side do not matter, and the human's own number —
-	// the budget in the cron prompt or an aim row — is given, not invented.
-	rent := evalOutcome{
-		Reply: "Two new 2BR under $2,400: 5417 NW 57th St at $2,295/mo",
-		Calls: []evalCall{{Result: `{"price":2295}`}},
-		Given: evalGiven(evalFixture{Cron: "new 2BR under $2400", Memory: []evalMemory{{Content: "under $2,400/mo by Nov 1"}}}, "under $2400"),
-	}
-	if fails := checkEval(context.Background(), rent, evalExpect{PricesFromTools: &yes}); len(fails) != 0 {
-		t.Fatalf("given/comma price flagged: %v", fails)
-	}
-}
-
-// cron fixtures wake with the same prefix cron.Runner puts on a scheduled job.
-func TestEvalInboundText(t *testing.T) {
-	now := time.Now()
-	text := evalInboundText(evalFixture{Cron: "Daily rental check"}, now)
-	if !strings.HasPrefix(text, cron.JobUserPrefix) || !strings.HasSuffix(text, "Daily rental check") {
-		t.Fatalf("cron text=%q", text)
-	}
-	text = evalInboundText(evalFixture{Inbound: "hi"}, now)
-	if text != "hi" {
-		t.Fatalf("inbound text=%q", text)
-	}
-	text = evalInboundText(evalFixture{Planner: true}, now)
-	if !strings.HasPrefix(text, cron.DailyPlannerMarker) {
-		t.Fatalf("planner text=%q", text)
+	if fails := checkEval(context.Background(), out, evalExpect{ToolsCalled: []evalCallExpect{{Name: "fs__file_patch", ArgsRegex: `a\.go`, MaxCalls: &one}}}); len(fails) != 0 {
+		t.Fatalf("one a.go call within max 1: %v", fails)
 	}
 }
 
@@ -290,407 +239,261 @@ func TestEvalHarness_ToolsFromNeedsLiveCatalog(t *testing.T) {
 	if evalLiveTools != nil {
 		t.Skip("live catalog wired")
 	}
-	fx := evalFixture{Name: "x", Inbound: "hi", ToolsFrom: []string{"rentals"}}
-	_, err := mergeLiveTools(nil, fx.ToolsFrom, nil)
-	if err == nil {
+	if _, err := mergeLiveTools(nil, []string{"fs"}, nil); err == nil {
 		t.Fatal("empty live catalog must fail")
 	}
 }
 
-func TestExpandEvalClock(t *testing.T) {
-	loc, _ := payloadClock()
-	now := time.Date(2026, time.September, 14, 12, 0, 0, 0, loc)
-	got := expandEvalClock("Sprint is at {{+150m}}; take the scoop at {{+120m}}. Slept {{-30m}}.", now)
-	want := "Sprint is at 2:30PM; take the scoop at 2:00PM. Slept 11:30AM."
-	if got != want {
-		t.Fatalf("got %q want %q", got, want)
-	}
-	// Canned tool results take the same clock, so a calendar stub stays in
-	// the future whenever the eval runs.
-	canned := newCannedTools([]evalTool{{Name: "google__calendar_list_events", Result: `[{"summary":"Dinner","start":"{{+90m}}"}]`}}, now)
-	if out, _ := canned.Call(context.Background(), "google__calendar_list_events", nil); out != `[{"summary":"Dinner","start":"1:30PM"}]` {
-		t.Fatalf("canned result not expanded: %q", out)
+// editFixture is edit_then_check with hand-written defs, so it runs without
+// the live catalog.
+func editFixture(t *testing.T) evalFixture {
+	t.Helper()
+	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "27_edit_then_check.json"))
+	fx.ToolsFrom = nil
+	return fx
+}
+
+func editScript() []*provider.Result {
+	return []*provider.Result{
+		{ToolCalls: []provider.ToolCall{toolCall("c1", "fs__file_get", map[string]any{"path": "greet.txt"})}},
+		{ToolCalls: []provider.ToolCall{toolCall("c2", "fs__file_patch", map[string]any{"path": "greet.txt", "old": "hi", "new": "hello"})}},
+		{ToolCalls: []provider.ToolCall{toolCall("c3", "shell__command_run", map[string]any{"command": "wc -l greet.txt"})}},
+		{ToolCalls: []provider.ToolCall{toolCall("c4", "git__status_get", map[string]any{})}},
+		{Content: "Changed hi to hello in greet.txt. wc -l says 1 line; tree is clean."},
 	}
 }
 
-// The scoop fixture: a scripted cron_schedule + [wait] passes; the recorder
-// saw the builtin, the job landed in the window, the wait armed, the forced
-// google schemas were published, and the persona under test is the seed.
-func TestEvalHarness_ScoopSchedulesCron(t *testing.T) {
+// The coding fixture through the harness: the recorder saw every call with
+// its round, the batch shape and budget notes come out right, and round 1
+// published the forced prefixes and the builtins.
+func TestEvalHarness_EditThenCheck(t *testing.T) {
 	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "01_scoop_at_2.json"))
-	when := time.Now().Add(120 * time.Minute).Format(time.RFC3339)
-	sc := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("c1", "cron_schedule", map[string]any{
-			"prompt": "Take the scoop — sprint in 30.", "when": when,
-		})}},
-		{Content: "Scoop reminder set. Want the sprint on the calendar too?\n[wait]"},
-	}}
+	fx := editFixture(t)
+	sc := &scriptCompleter{res: editScript()}
 
 	out := runEvalFixture(ctx, t, sc, fx)
 
 	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
 		t.Fatalf("%v\n%s", fails, describeEval(out))
 	}
-	if !out.Waiting {
-		t.Fatalf("wait did not arm\n%s", describeEval(out))
-	}
-	if firstCall(out.Calls, "cron_schedule") != 0 {
-		t.Fatalf("recorder missed cron_schedule\n%s", describeEval(out))
-	}
-	if out.Rounds != 2 || out.Calls[0].Round != 1 {
-		t.Fatalf("rounds=%d call round=%d, want 2 and 1", out.Rounds, out.Calls[0].Round)
-	}
-	if got := describeBatches(out); got != "[cron_schedule] → reply" {
+	if got := describeBatches(out); got != "[fs__file_get] → [fs__file_patch] → [shell__command_run] → [git__status_get] → reply" {
 		t.Fatalf("batches %q", got)
 	}
 	one := 1
 	if fails := checkEval(ctx, out, evalExpect{RoundBudget: &one}); len(fails) != 0 {
 		t.Fatalf("round_budget must never fail a run: %v", fails)
 	}
-	if got := overBudget(out, evalExpect{RoundBudget: &one}); got != "over budget: 2 rounds, budget 1" {
+	if got := overBudget(out, evalExpect{RoundBudget: &one}); got != "over budget: 5 rounds, budget 1" {
 		t.Fatalf("over-budget note %q", got)
 	}
-	two := 2
-	if got := overBudget(out, evalExpect{RoundBudget: &two}); got != "" {
+	if got := overBudget(out, fx.Expect); got != "" {
 		t.Fatalf("inside budget should be quiet, got %q", got)
 	}
 	req := sc.reqs[0]
-	for _, name := range []string{"cron_schedule", "memory_store", "self_note", "mcp_enable", "google__calendar_list_events"} {
+	for _, name := range []string{"memory_store", "self_note", "mcp_enable", "fs__file_get", "shell__command_run", "git__status_get"} {
 		if !hasToolDef(req.Tools, name) {
 			t.Errorf("round 1 did not publish %s", name)
 		}
-	}
-	if u := lastUserText(req); strings.Contains(u, "{{") || !strings.Contains(u, "take the scoop at") {
-		t.Errorf("clock placeholders not expanded: %q", u)
-	}
-	var persona string
-	for _, m := range req.Messages {
-		if m.Role == provider.RoleSystem && strings.Contains(m.Content, "## About you") {
-			persona = m.Content
-		}
-	}
-	if !strings.Contains(persona, "- **Name:** Kit") || !strings.Contains(persona, "- **Name:** Sam") {
-		t.Errorf("persona under test is not the named seed")
 	}
 }
 
 func TestEvalHarness_BareAckFails(t *testing.T) {
 	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "01_scoop_at_2.json"))
-	sc := &scriptCompleter{res: []*provider.Result{{Content: "Got it."}}}
+	fx := editFixture(t)
+	sc := &scriptCompleter{res: []*provider.Result{{Content: "Done."}}}
 
 	out := runEvalFixture(ctx, t, sc, fx)
 
 	fails := checkEval(ctx, out, fx.Expect)
-	if len(fails) != 2 {
-		t.Fatalf("want reply_not + any_of failures, got %v", fails)
+	if len(fails) != 6 {
+		t.Fatalf("want four missing tools, an order, and a reply failure, got %v", fails)
 	}
-	if !strings.Contains(fails[0], "should not match") || !strings.Contains(fails[1], "any_of") {
-		t.Fatalf("unexpected failures %v", fails)
+	// Reversed order is caught on its own.
+	swapped := out
+	swapped.Calls = []evalCall{{Name: "fs__file_patch", Args: `hello`}, {Name: "fs__file_get", Args: `greet.txt`}}
+	got := checkEval(ctx, swapped, evalExpect{Order: []string{"fs__file_get", "fs__file_patch"}})
+	if len(got) != 1 || !strings.HasPrefix(got[0], "order:") {
+		t.Fatalf("want one order failure, got %v", got)
 	}
 }
 
-// Off prefix: round 1 hides the google schema and stamps it off; after
-// mcp_enable round 2 publishes it; the order check passes.
+// Off prefix: round 1 hides the fs schema; after mcp_enable round 2
+// publishes it.
 func TestEvalHarness_OffPrefixEnableThenCall(t *testing.T) {
 	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "04_off_prefix_enable_then_call.json"))
+	fx := evalFixture{
+		Name:    "off_prefix",
+		Inbound: "what does greet.txt say?",
+		Tools:   []evalTool{{Name: "fs__file_get", Description: "read one file", Result: "hi\n"}},
+	}
 	sc := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("c1", "mcp_enable", map[string]any{"prefixes": []string{"google"}})}},
-		{ToolCalls: []provider.ToolCall{toolCall("c2", "google__calendar_list_events", map[string]any{})}},
-		{Content: "Sprint planning at 2:30, dentist at 5. Want a heads-up before the dentist?"},
+		{ToolCalls: []provider.ToolCall{toolCall("c1", "mcp_enable", map[string]any{"prefixes": []string{"fs"}})}},
+		{ToolCalls: []provider.ToolCall{toolCall("c2", "fs__file_get", map[string]any{"path": "greet.txt"})}},
+		{Content: "It says hi."},
 	}}
 
 	out := runEvalFixture(ctx, t, sc, fx)
 
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
-	}
-	if hasToolDef(sc.reqs[0].Tools, "google__calendar_list_events") {
+	if hasToolDef(sc.reqs[0].Tools, "fs__file_get") {
 		t.Error("round 1 published an off prefix")
 	}
 	if !hasToolDef(sc.reqs[0].Tools, "mcp_enable") {
 		t.Error("round 1 did not publish mcp_enable")
 	}
-	if !hasToolDef(sc.reqs[1].Tools, "google__calendar_list_events") {
+	if !hasToolDef(sc.reqs[1].Tools, "fs__file_get") {
 		t.Error("round 2 did not publish the enabled prefix")
 	}
-	if got := describeBatches(out); got != "[mcp_enable] → [google__calendar_list_events] → reply" {
+	if got := describeBatches(out); got != "[mcp_enable] → [fs__file_get] → reply" {
 		t.Errorf("batches %q", got)
 	}
-
-	// Reversed order is caught.
-	swapped := evalOutcome{Calls: []evalCall{
-		{Name: "google__calendar_list_events"}, {Name: "mcp_enable", Args: `{"prefixes":["google"]}`},
-	}, RawReply: "Sprint at 2:30.", mem: out.mem}
-	fails := checkEval(ctx, swapped, fx.Expect)
-	if len(fails) != 1 || !strings.HasPrefix(fails[0], "order:") {
-		t.Fatalf("want one order failure, got %v", fails)
-	}
 }
 
-// Planner wake: the turn is the daily planner prompt, Garmin is published
-// (forced) and recorded, SELF.md seeded, not silent.
-func TestEvalHarness_PlannerWake(t *testing.T) {
+// results: the nth call gets the nth result and the last one repeats, so a
+// test can fail, then pass.
+func TestEvalHarness_ResultsSequence(t *testing.T) {
 	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "07_planner_gym_no_workout.json"))
+	fx := evalFixture{
+		Name:    "results_sequence",
+		Inbound: "run the tests until they pass",
+		Force:   []string{"shell"},
+		Tools:   []evalTool{{Name: "shell__command_run", Description: "run", Results: []string{"exit 1\nFAIL", "exit 0\nok"}}},
+	}
+	run := toolCall("c", "shell__command_run", map[string]any{"command": "go test ./..."})
 	sc := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("c1", "garmin__activities_list", map[string]any{})}},
-		{ToolCalls: []provider.ToolCall{toolCall("c2", "aim_log", map[string]any{
-			"what": "Garmin: no activities", "aims": map[string]any{"training": 0}, "note": "asked",
-		})}},
-		{Content: "Nothing on Garmin. What's in the way of the gym this week?\n[wait]"},
+		{ToolCalls: []provider.ToolCall{run}},
+		{ToolCalls: []provider.ToolCall{run}},
+		{ToolCalls: []provider.ToolCall{run}},
+		{Content: "Passing now."},
 	}}
 
 	out := runEvalFixture(ctx, t, sc, fx)
 
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
+	var got []string
+	for _, c := range out.Calls {
+		got = append(got, c.Result)
 	}
-	u := lastUserText(sc.reqs[0])
-	if !strings.Contains(u, cron.DailyPlannerMarker) || !strings.Contains(u, "Garmin") {
-		t.Errorf("planner turn text wrong: %q", u)
-	}
-	var persona string
-	for _, m := range sc.reqs[0].Messages {
-		if m.Role == provider.RoleSystem && strings.Contains(m.Content, "## About you") {
-			persona = m.Content
-		}
-	}
-	if !strings.Contains(persona, "shoes by the door") {
-		t.Error("SELF.md seed not in the persona")
-	}
-
-	// A [silent] planner reply is caught.
-	quiet := &scriptCompleter{res: []*provider.Result{{Content: "[silent]"}}}
-	out = runEvalFixture(ctx, t, quiet, fx)
-	fails := checkEval(ctx, out, fx.Expect)
-	if len(fails) == 0 || !out.Silent {
-		t.Fatalf("silent planner should fail: %v\n%s", fails, describeEval(out))
+	if want := []string{"exit 1\nFAIL", "exit 0\nok", "exit 0\nok"}; !slices.Equal(got, want) {
+		t.Fatalf("results %q want %q", got, want)
 	}
 }
 
-// pref/calendar with an unspecified kind is accepted under any kind the model
-// plausibly picks.
-func TestEvalHarness_MemoryAnyKind(t *testing.T) {
+// by_args: a parallel batch of one tool on different files gets each body,
+// whatever order the goroutines run in.
+func TestEvalHarness_ByArgs(t *testing.T) {
 	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "02_get_something_on_it.json"))
+	fx := evalFixture{
+		Name:    "by_args",
+		Inbound: "read a.go and b.go",
+		Force:   []string{"fs"},
+		Tools: []evalTool{{Name: "fs__file_get", Description: "read", Result: "missing", ByArgs: []evalArgsResult{
+			{ArgsRegex: `\ba\.go`, Result: "package a"},
+			{ArgsRegex: `\bb\.go`, Result: "package b"},
+		}}},
+	}
+	sc := &scriptCompleter{res: []*provider.Result{
+		{ToolCalls: []provider.ToolCall{
+			toolCall("1", "fs__file_get", map[string]any{"path": "b.go"}),
+			toolCall("2", "fs__file_get", map[string]any{"path": "a.go"}),
+			toolCall("3", "fs__file_get", map[string]any{"path": "c.go"}),
+		}},
+		{Content: "Read them."},
+	}}
+
+	out := runEvalFixture(ctx, t, sc, fx)
+
+	got := map[string]string{}
+	for _, c := range out.Calls {
+		got[c.Args] = c.Result
+	}
+	want := map[string]string{`{"path":"a.go"}`: "package a", `{"path":"b.go"}`: "package b", `{"path":"c.go"}`: "missing"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("results %q want %q", got, want)
+	}
+}
+
+func TestCheckEval_SameRound(t *testing.T) {
+	batch := [][]evalCallExpect{{{Name: "fs__file_get", ArgsRegex: `a\.go`}, {Name: "fs__file_get", ArgsRegex: `b\.go`}}}
+	parallel := evalOutcome{Calls: []evalCall{
+		{Name: "fs__file_get", Args: `{"path":"b.go"}`, Round: 1},
+		{Name: "fs__file_get", Args: `{"path":"a.go"}`, Round: 1},
+	}}
+	if fails := checkEval(context.Background(), parallel, evalExpect{SameRound: batch}); len(fails) != 0 {
+		t.Fatalf("parallel batch failed: %v", fails)
+	}
+	serial := evalOutcome{Calls: []evalCall{
+		{Name: "fs__file_get", Args: `{"path":"a.go"}`, Round: 1},
+		{Name: "fs__file_get", Args: `{"path":"b.go"}`, Round: 2},
+	}}
+	if fails := checkEval(context.Background(), serial, evalExpect{SameRound: batch}); len(fails) != 1 {
+		t.Fatalf("serial reads should fail same_round once, got %v", fails)
+	}
+	// One call cannot stand in for two expectations.
+	twice := evalOutcome{Calls: []evalCall{{Name: "fs__file_get", Args: `{"path":"a.go b.go"}`, Round: 1}}}
+	if fails := checkEval(context.Background(), twice, evalExpect{SameRound: batch}); len(fails) != 1 {
+		t.Fatalf("one call matched two expectations: %v", fails)
+	}
+}
+
+// script: the first rounds are canned and the model sees them as its own;
+// the model is first asked on the round after.
+func TestEvalHarness_ScriptRounds(t *testing.T) {
+	ctx := context.Background()
+	fx := evalFixture{
+		Name:    "script_rounds",
+		Inbound: "what does greet.txt say?",
+		Force:   []string{"fs"},
+		Tools:   []evalTool{{Name: "fs__file_get", Description: "read one file", Result: "hi\n"}},
+		Script:  []evalScriptRound{{ToolCalls: []evalScriptCall{{Name: "fs__file_get", Args: map[string]any{"path": "greet.txt"}}}}},
+	}
+	sc := &scriptCompleter{res: []*provider.Result{{Content: "It says hi."}}}
+
+	out := runEvalFixture(ctx, t, sc, fx)
+
+	if len(sc.reqs) != 1 {
+		t.Fatalf("model asked %d times, want 1 (round 1 is scripted)", len(sc.reqs))
+	}
+	if out.Rounds != 2 || describeBatches(out) != "[fs__file_get] → reply" {
+		t.Fatalf("rounds=%d batches %q", out.Rounds, describeBatches(out))
+	}
+	var sawResult bool
+	for _, m := range sc.reqs[0].Messages {
+		if m.Role == provider.RoleTool && m.Content == "hi\n" {
+			sawResult = true
+		}
+	}
+	if !sawResult {
+		t.Fatal("the model did not see the scripted call's result")
+	}
+}
+
+// A memory row the model stores is visible to the memory gate, under any
+// kind when the fixture leaves kind empty; {{memory:N}} names seeded ids.
+func TestEvalHarness_MemoryRows(t *testing.T) {
+	ctx := context.Background()
+	fx := evalFixture{
+		Name:    "memory_rows",
+		Inbound: "the tests here run with make test",
+		Memory:  []evalMemory{{Kind: "fact", Subject: "convention/imports", Content: "goimports"}},
+	}
 	sc := &scriptCompleter{res: []*provider.Result{
 		{ToolCalls: []provider.ToolCall{toolCall("c1", "memory_store", map[string]any{
-			"kind": "fact", "subject": "pref/calendar", "content": "empty day → get something on it",
+			"kind": "fact", "subject": "cmd/test", "content": "make test",
 		})}},
-		{Content: "Noted. Today is empty — lunch out or a training block?\n[wait]"},
+		{Content: "Noted: make test."},
 	}}
 
 	out := runEvalFixture(ctx, t, sc, fx)
 
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
+	if fails := checkEval(ctx, out, evalExpect{Memory: []evalMemoryExpect{{Subject: "cmd/test"}}}); len(fails) != 0 {
 		t.Fatalf("%v\n%s", fails, describeEval(out))
 	}
-}
-
-// Seeded memory rows are addressable as {{memory:N}} and age_days backdates
-// them, so 23's forget-by-id and 24's "(9d ago)" stamp are pinned to the
-// fixture, not to whatever id SQLite handed out.
-func TestEvalHarness_MemoryIDsAndAge(t *testing.T) {
-	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "23_chat_todo_done.json"))
-	sc := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("c1", "memory_forget", map[string]any{"id": 0})}},
-		{Content: "Done — dentist is off the list."},
-	}}
-	out := runEvalFixture(ctx, t, sc, fx)
-	if len(out.MemoryIDs) != 4 {
+	if fails := checkEval(ctx, out, evalExpect{Memory: []evalMemoryExpect{{Subject: "cmd/build"}}}); len(fails) != 1 {
+		t.Fatalf("missing row must fail: %v", fails)
+	}
+	if len(out.MemoryIDs) != 1 {
 		t.Fatalf("memory ids %v", out.MemoryIDs)
 	}
-	var seen string
-	for _, req := range sc.reqs {
-		for _, m := range req.Messages {
-			if strings.Contains(m.Content, "[todo]") {
-				seen = m.Content
-			}
-		}
-	}
-	want := fmt.Sprintf("[todo] #%d dentist: call to book a cleaning (3d ago) · #%d passport: renew, by Oct 15 (1d ago)", out.MemoryIDs[0], out.MemoryIDs[1])
-	if !strings.Contains(seen, want) {
-		t.Fatalf("stamp:\n%s\nwant %q", seen, want)
-	}
-	got := expandEvalIDs(`"id"\s*:\s*{{memory:0}} or {{ledger:0}} or {{memory:9}}`, evalIDs{memory: out.MemoryIDs})
-	if got != fmt.Sprintf(`"id"\s*:\s*%d or 0 or 0`, out.MemoryIDs[0]) {
-		t.Fatalf("expand %q", got)
-	}
-	// The scripted forget used id 0, so the fixture's by-id gate must fail.
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) == 0 {
-		t.Fatal("forget by the wrong id must fail the fixture")
-	}
-}
-
-// Reactions through the harness: a [react 👍] alone is a reaction, not
-// silence, and satisfies 05's any_of and 12's react_only; text next to it
-// fails react_only.
-func TestEvalHarness_ReactToken(t *testing.T) {
-	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "12_react_to_thanks.json"))
-	sc := &scriptCompleter{res: []*provider.Result{{Content: "[react 👍]"}}}
-
-	out := runEvalFixture(ctx, t, sc, fx)
-	if out.Reaction != "👍" || out.Reply != "" || out.Silent {
-		t.Fatalf("reaction=%q reply=%q silent=%v", out.Reaction, out.Reply, out.Silent)
-	}
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
-	}
-	five := loadEvalFixture(t, filepath.Join(evalFixtureDir, "05_thanks_sounds_good.json"))
-	if fails := checkEval(ctx, out, five.Expect); len(fails) > 0 {
-		t.Fatalf("05 must accept a reaction alone: %v", fails)
-	}
-
-	chatty := evalOutcome{Reaction: "👍", Reply: "You're welcome!", RawReply: "You're welcome!\n[react 👍]", mem: out.mem}
-	fails := checkEval(ctx, chatty, fx.Expect)
-	if len(fails) != 1 || !strings.Contains(fails[0], "no text") {
-		t.Fatalf("want one react_only failure, got %v", fails)
-	}
-	none := evalOutcome{Reply: "Anytime.", RawReply: "Anytime.", mem: out.mem}
-	fails = checkEval(ctx, none, fx.Expect)
-	if len(fails) != 2 || !strings.Contains(fails[0], "expected a reaction") {
-		t.Fatalf("want reaction + react_only failures, got %v", fails)
-	}
-}
-
-// Their 👍 with nothing pending never reaches the model; waiting, it does.
-func TestEvalHarness_ReactionTriage(t *testing.T) {
-	ctx := context.Background()
-
-	idle := loadEvalFixture(t, filepath.Join(evalFixtureDir, "13_reaction_idle_thumbs_up.json"))
-	sc := &scriptCompleter{res: []*provider.Result{{Content: "should not be asked"}}}
-	out := runEvalFixture(ctx, t, sc, idle)
-	if fails := checkEval(ctx, out, idle.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
-	}
-	if len(sc.reqs) != 0 {
-		t.Fatalf("model called %d times on an idle 👍", len(sc.reqs))
-	}
-	billed := evalOutcome{Rounds: 1, RawReply: "[silent]", Silent: true, mem: out.mem}
-	if fails := checkEval(ctx, billed, idle.Expect); len(fails) != 1 || !strings.Contains(fails[0], "model rounds") {
-		t.Fatalf("want a no_model_call failure, got %v", fails)
-	}
-
-	waiting := loadEvalFixture(t, filepath.Join(evalFixtureDir, "14_reaction_waiting_thumbs_up.json"))
-	sc = &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("c1", "google__calendar_create_events", map[string]any{
-			"events": []any{map[string]any{
-				"summary": "Gym", "start_time": "2026-09-17T07:00:00-07:00", "end_time": "2026-09-17T08:00:00-07:00",
-			}},
-		})}},
-		{Content: "Thursday 7–8 blocked for the gym."},
-	}}
-	out = runEvalFixture(ctx, t, sc, waiting)
-	if fails := checkEval(ctx, out, waiting.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
-	}
-	if len(sc.reqs) != 2 {
-		t.Fatalf("waiting 👍 must reach the model, got %d rounds", len(sc.reqs))
-	}
-}
-
-// Sunday with a new weigh-in and no aim_log fails. The live 2/3 miss was
-// this case, recorded and left. A scripted week line without the log is a
-// failed run, not a note.
-func TestEvalHarness_WeekStartRequiresAimLog(t *testing.T) {
-	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "20_planner_week_start.json"))
-	skip := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{
-			toolCall("g", "garmin__activities_list", map[string]any{"start": "2026-10-04"}),
-			toolCall("c", "google__calendar_list_events", map[string]any{"start": "2026-10-04"}),
-		}},
-		{Content: "Training and weight are down."},
-	}}
-	out := runEvalFixture(ctx, t, skip, fx)
-	fails := checkEval(ctx, out, fx.Expect)
-	joined := strings.Join(fails, "; ")
-	if !strings.Contains(joined, "aim_log") {
-		t.Fatalf("missing aim_log must fail the Sunday fixture, got %v\n%s", fails, describeEval(out))
-	}
-
-	log := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{
-			toolCall("g", "garmin__activities_list", map[string]any{"start": "2026-10-04"}),
-			toolCall("c", "google__calendar_list_events", map[string]any{"start": "2026-10-04"}),
-		}},
-		{ToolCalls: []provider.ToolCall{toolCall("a", "aim_log", map[string]any{
-			"what": "weight 183 lb", "aims": map[string]int{"training": 0, "weight": 0},
-			"metric": "weight", "value": 183, "unit": "lb",
-		})}},
-		{Content: "Training and weight are down."},
-	}}
-	out = runEvalFixture(ctx, t, log, fx)
-	if fails := checkEval(ctx, out, fx.Expect); len(fails) > 0 {
-		t.Fatalf("%v\n%s", fails, describeEval(out))
-	}
-}
-
-// Tuesday sees the praised note Monday's aim_log actually wrote, and a
-// repeated line fails.
-func TestEvalHarness_TwoMornings(t *testing.T) {
-	ctx := context.Background()
-	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "26_planner_two_mornings.json"))
-	credit := "Three mornings. That's the credit."
-	quiet := "Quiet morning. Nothing to add."
-	sc := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("g1", "garmin__activities_list", map[string]any{"start": "2026-10-05"})}},
-		{ToolCalls: []provider.ToolCall{toolCall("a1", "aim_log", map[string]any{
-			"what": "gym session", "aims": map[string]int{"training": 2}, "note": "praised",
-		})}},
-		{Content: credit},
-		{ToolCalls: []provider.ToolCall{toolCall("g2", "garmin__activities_list", map[string]any{"start": "2026-10-06"})}},
-		{Content: quiet},
-	}}
-	mornings := runEvalMornings(ctx, t, sc, fx)
-	if len(mornings) != 2 {
-		t.Fatalf("mornings=%d", len(mornings))
-	}
-	for _, m := range mornings {
-		fails := checkEval(ctx, m.Out, m.Expect)
-		if m.Differ && sameMorningLine(m.PrevLine, morningReply(m.Out)) {
-			fails = append(fails, "same line as the previous morning")
-		}
-		if len(fails) > 0 {
-			t.Fatalf("%v\n%s", fails, describeEval(m.Out))
-		}
-	}
-	var tuesday string
-	if len(sc.reqs) < 4 {
-		t.Fatalf("tuesday never ran, rounds=%d", len(sc.reqs))
-	}
-	for _, msg := range sc.reqs[3].Messages {
-		if strings.Contains(msg.Content, "praised") {
-			tuesday = msg.Content
-			break
-		}
-	}
-	if tuesday == "" {
-		t.Fatal("tuesday prompt has no praised note from monday's aim_log")
-	}
-
-	repeat := &scriptCompleter{res: []*provider.Result{
-		{ToolCalls: []provider.ToolCall{toolCall("g1", "garmin__activities_list", map[string]any{"start": "2026-10-05"})}},
-		{ToolCalls: []provider.ToolCall{toolCall("a1", "aim_log", map[string]any{
-			"what": "gym session", "aims": map[string]int{"training": 2}, "note": "praised",
-		})}},
-		{Content: credit},
-		{ToolCalls: []provider.ToolCall{toolCall("g2", "garmin__activities_list", map[string]any{"start": "2026-10-06"})}},
-		{Content: credit},
-	}}
-	mornings = runEvalMornings(ctx, t, repeat, fx)
-	var repeated bool
-	for _, m := range mornings {
-		if m.Differ && sameMorningLine(m.PrevLine, morningReply(m.Out)) {
-			repeated = true
-		}
-	}
-	if !repeated {
-		t.Fatal("a repeated credit line must fail the second morning")
+	if got, want := expandEvalIDs(`{{memory:0}} {{memory:9}}`, out.MemoryIDs), fmt.Sprintf("%d 0", out.MemoryIDs[0]); got != want {
+		t.Fatalf("expand %q want %q", got, want)
 	}
 }

@@ -9,7 +9,6 @@ COVERAGE_HTML := coverage.html
 # Static binary by default (matches container contract).
 export CGO_ENABLED ?= 0
 
-CHANNEL     ?= stdio
 PERSONA_DIR ?= ./deploy/persona
 
 ifeq ($(OS),Windows_NT)
@@ -19,7 +18,7 @@ ifeq ($(OS),Windows_NT)
 	MKDIR_BIN  = if not exist "$(BIN_DIR)" mkdir "$(BIN_DIR)"
 	RM_BIN     = if exist "$(BIN_DIR)" rmdir /s /q "$(BIN_DIR)"
 	RM_COV     = if exist "$(COVERAGE)" del /q "$(COVERAGE)" & if exist "$(COVERAGE_HTML)" del /q "$(COVERAGE_HTML)"
-	RUN_ENV    = set "CHANNEL=$(CHANNEL)"&& set "PERSONA_DIR=$(PERSONA_DIR)"&&
+	RUN_ENV    = set "PERSONA_DIR=$(PERSONA_DIR)"&&
 else
 	BINARY    := $(BIN_DIR)/george
 	NULL      := /dev/null
@@ -27,7 +26,7 @@ else
 	MKDIR_BIN  = mkdir -p "$(BIN_DIR)"
 	RM_BIN     = rm -rf "$(BIN_DIR)"
 	RM_COV     = rm -f "$(COVERAGE)" "$(COVERAGE_HTML)"
-	RUN_ENV    = CHANNEL="$(CHANNEL)" PERSONA_DIR="$(PERSONA_DIR)"
+	RUN_ENV    = PERSONA_DIR="$(PERSONA_DIR)"
 endif
 
 # Build-time version stamp (git describe). Release tags are tracked in ./VERSION.
@@ -53,7 +52,7 @@ help: ## Show available targets
 	@echo.
 	@echo george targets:
 	@echo   make build          Build george into ./bin
-	@echo   make run            Run with CHANNEL=stdio (override: CHANNEL= PERSONA_DIR=)
+	@echo   make run            Run the stdio REPL (override: PERSONA_DIR=)
 	@echo   make init           Scaffold deploy/persona + deploy/mcp.toml via george init
 	@echo   make test           Run all tests
 	@echo   make test-verbose   Run tests with -v
@@ -86,7 +85,7 @@ build: ## Build george into ./bin
 	@echo built $(BINARY)
 
 .PHONY: run
-run: ## Run george (CHANNEL=stdio by default for local REPL)
+run: ## Run the george stdio REPL
 	$(RUN_ENV) go run $(CMD) run
 
 .PHONY: init
@@ -107,7 +106,7 @@ race: ## Run tests with the race detector (requires CGO)
 
 # Behavioral eval against a live model (docs/eval_setup.md). Sources .env for
 # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL; skips when they are unset. Fixtures:
-# internal/agent/testdata/eval. EVAL_ARGS='-eval.n=10 -eval.only=scoop_at_2,planner_gym_no_workout'.
+# internal/agent/testdata/eval. EVAL_ARGS='-eval.n=10 -eval.only=edit_then_check'.
 # A turn is ~15s; 7 fixtures x 10 runs is ~20min, so the go test timeout is
 # explicit (the default 10m kills the run mid-fixture).
 EVAL_ARGS ?=
@@ -180,7 +179,7 @@ docker-build: ## Build the container image (george:local)
 
 .PHONY: docker-stdio
 docker-stdio: ## Interactive stdio REPL via compose
-	docker compose run --rm -it -e CHANNEL=stdio george
+	docker compose run --rm -it george
 
 .PHONY: version
 version: ## Show VERSION file and latest git tag / next patch

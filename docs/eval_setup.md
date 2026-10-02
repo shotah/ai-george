@@ -28,7 +28,11 @@ seed. No MCP servers, no Telegram, no Google — every tool is canned.
    ```
 
    About 19GB. The tag is the Q4_K_M build of Qwen3-Coder-30B-A3B
-   (30.5B total, 3.3B active).
+   (30.5B total, 3.3B active). The model advertises a 256k context.
+   On a machine with a lot of shared memory Ollama will reserve that
+   whole window (tens of GB of cache) and the first turn sits in
+   warmup. Set `OLLAMA_CONTEXT_LENGTH=32768` on the Ollama service
+   before the run.
 
 2. Copy the example. The lines at the top are already this model:
 
@@ -294,7 +298,7 @@ server missing from the manifest. Add a server by adding a `[[server]]`
 to that manifest; Google is there with a two-tool allowlist because it
 publishes about a hundred.
 
-`denver_flight` and `rental_daily_cron` run on real catalogs. The rest are
+`denver_flight`, `rental_daily_cron`, and `edit_then_check` run on real catalogs. The rest are
 hand-written where the binary needs a real account to list tools
 (Garmin) or the schema is trivial; move them as the siblings allow.
 

@@ -87,7 +87,7 @@ func Timezone(text string) string {
 	return name
 }
 
-// ResolveTimezone prefers PERSONA.md Timezone over fallback (CRON_TZ).
+// ResolveTimezone prefers PERSONA.md Timezone over fallback (the machine zone).
 func ResolveTimezone(personaText, fallback string) (name string, loc *time.Location, source string) {
 	if tz := Timezone(personaText); tz != "" {
 		loc, err := time.LoadLocation(tz)
@@ -107,7 +107,7 @@ func ResolveTimezone(personaText, fallback string) (name string, loc *time.Locat
 		}
 		return "America/Los_Angeles", loc, "America/Los_Angeles"
 	}
-	return fb, loc, "CRON_TZ"
+	return fb, loc, "fallback"
 }
 
 func readOptional(path string) (string, error) {

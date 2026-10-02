@@ -4,22 +4,22 @@ Work list for the local coding loop. Names follow [mcp-naming.md](mcp-naming.md)
 
 The harness stays the harness. Design already leaves workspace tools to MCP binaries. The checkouts under `repos/` are the personal-assistant set (google, garmin, strava, youtube, beam, math, gemini-search, feeds, twitter, maps, image, pendant, boards, health, rentals, fleet). None of them reads a tree, patches a file, or runs a command. Those are new repos. They do not land in this process, and they are not features added to those plugins.
 
-## Three servers
+## Four servers
 
-The edit loop is one server. Git is a second. Shell is a third. GitHub waits.
+The edit loop is one server. Git is a second. Shell is a third. GitHub is the fourth.
 
 | Server id | Binary | Repo | In the default grant |
 | --- | --- | --- | --- |
 | `fs` | `fs-mcp` | new `fs-mcp` | yes, `force = true` |
 | `git` | `git-mcp` | new `git-mcp` | yes, `force = true` |
 | `shell` | `shell-mcp` | new `shell-mcp` | yes, `force = true` |
-| `github` | `github-mcp` | new `github-mcp` | no, until the local fixture is green |
+| `github` | `github-mcp` | `repos/github-mcp` | yes, `force = true` |
 
 One process for all of that would boot-fail together. Fail-soft is per server: a directory that is not a git repo must still read and patch. Shell is the grant you drop. GitHub needs a token and the network; the inner loop does not.
 
 A server per verb (`grep`, `diff`, `patch`, `write`) splits one edit across prefixes. Schemas for a prefix show up after `mcp_enable`. Search and patch belong on `fs` with read and create.
 
-These three stay `force = true`. Eleven small schemas, always published, is cheaper than an enable round-trip before every edit. GitHub stays off the default manifest so it does not sit in that prompt.
+These four stay `force = true`. The schemas stay published, which is cheaper than an enable round-trip before every edit. GitHub needs a token and the network; a missing `GITHUB_TOKEN` skips that server and leaves the others up.
 
 Showing a diff and applying a diff are different tools on purpose. `git__diff_get` shows the repo. `fs__file_patch` writes a hunk. The host ranks closest names by tokens and strips generic verbs (`get`, `list`, `search`, `create`, `update`, `delete`, `add`). `update` on the edit tool would score 0 against a call of `apply_patch`. The token that survives is `patch`.
 
@@ -82,9 +82,9 @@ Server id `shell`. One tool.
 - One command string. A timeout. The result leads with the exit code and the tail of the output, so a test failure survives truncation.
 - The container (or the root jail on a systemd unit) is the sandbox. This server does not grow an allowlist of binaries.
 
-## `github` — later
+## `github`
 
-Not in the first manifest. The local fixture below is green before this repo exists.
+The checkout is `repos/github-mcp`. It is in the default manifest. A missing token skips this server.
 
 Server id `github`. Tools do not start with `github`, and they do not use nouns already taken.
 
@@ -105,7 +105,7 @@ No `diff_*` (that is `git`). No `link_*` (maps, flights, rentals, cars). No seco
 
 ## Manifest shape
 
-Binaries on `PATH`. Same root on every server.
+Binaries on `PATH`. `fs`, `git`, and `shell` share `--root`. `github` does not.
 
 ```toml
 [[server]]
@@ -125,6 +125,11 @@ name  = "shell"
 command = "shell-mcp"
 args  = ["--root", "/workspace"]
 force = true
+
+[[server]]
+name    = "github"
+command = "github-mcp"
+force   = true
 ```
 
 ## Names that will get invented
@@ -146,17 +151,17 @@ No dual registration. Tests in each repo assert every tool matches `^[a-z]+_[a-z
 
 Each box is a new repo, or a change in this repo that only grants one. Package TODOs link back to [mcp-naming.md](mcp-naming.md) and to this file.
 
-- [ ] `fs-mcp`: the five core tools, `--root`, `--tool-tier core`, name tests.
-- [ ] `git-mcp`: the five core tools, repo-only, no remotes, name tests.
-- [ ] `shell-mcp`: `command_run` only, timeout, exit code, tail of output.
-- [ ] Commented `[[server]]` blocks in `examples/mcp.toml.example` once each binary has a release URL.
-- [ ] One live eval fixture on the pinned model: `fs__file_get`, then `fs__file_patch`, then `shell__command_run`. Every run passes. A unit test that only pastes the name does not count.
-- [ ] Add `git__status_get` to that fixture after `git-mcp` is granted.
-- [ ] `github-mcp` after that fixture is green. It stays out of the default manifest until then.
+- [x] `fs-mcp`: the five core tools, `--root`, `--tool-tier core`, name tests. Checkout: `repos/fs-mcp`.
+- [x] `git-mcp`: the five core tools, repo-only, no remotes, name tests. Checkout: `repos/git-mcp`.
+- [x] `shell-mcp`: `command_run` only, timeout, exit code, tail of output. Checkout: `repos/shell-mcp`.
+- [x] Grants in `examples/mcp.toml.example`, `deploy/mcp.toml`, and `internal/agent/testdata/eval/mcp.toml`, including `github`. Each `download_tag` is `latest`.
+- [x] One live eval fixture on the pinned model: `fs__file_get`, then `fs__file_patch`, then `shell__command_run`. Fixture `edit_then_check`. Every run passes, in that order. A unit test that only pastes the name does not count.
+- [x] Add `git__status_get` to that fixture after `git-mcp` is granted.
+- [x] `github-mcp`: ten tools, `GITHUB_TOKEN`, name tests. Checkout: `repos/github-mcp`. Granted with `force = true`.
 
 ## Done when
 
-- [ ] A non-git directory still lists and patches files, and the git server is the one that skips.
-- [ ] Omitting `shell` from `mcp.toml` removes `command_run` and leaves `fs` and `git` up.
-- [ ] The live log for the fixture shows those host names and no `file_update`, `grep`, `git_status`, or `run_command` registration.
-- [ ] This process still has no workspace tools of its own.
+- [x] A non-git directory still lists and patches files, and the git server is the one that skips.
+- [x] Omitting `shell` from `mcp.toml` removes `command_run` and leaves `fs` and `git` up.
+- [x] The live log for the fixture shows those host names and no `file_update`, `grep`, `git_status`, or `run_command` registration.
+- [x] This process still has no workspace tools of its own.

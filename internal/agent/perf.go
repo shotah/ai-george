@@ -27,7 +27,7 @@ type perfRecord struct {
 	genEst       int
 	firstTokenMS int64  // iteration 1 only; 0 = non-streaming
 	volatileEst  int    // iteration 1 volatile token estimate
-	source       string // user | cron | watch | reaction
+	source       string // user
 	outcome      string // ok | landing | stall | refuse | error | cancel
 	cold         bool   // first turn after boot
 }
@@ -79,28 +79,9 @@ func (r *perfRing) turnCount() uint64 {
 	return r.total
 }
 
-// Turn source values on `turn perf`. Keep this set stable — Gantree charts
-// anything else as spend "unknown". Planner / examples wake as cron ([cron] prefix).
-const (
-	sourceUser     = "user"
-	sourceCron     = "cron"
-	sourceWatch    = "watch"
-	sourceReaction = "reaction"
-)
-
-func turnSource(text string) string {
-	t := strings.TrimSpace(text)
-	switch {
-	case strings.HasPrefix(t, "[cron]"):
-		return sourceCron
-	case strings.HasPrefix(t, "[watch]"):
-		return sourceWatch
-	case strings.HasPrefix(t, "[reaction]"):
-		return sourceReaction
-	default:
-		return sourceUser
-	}
-}
+// sourceUser is the one turn source on `turn perf`: every turn is the human
+// at the prompt.
+const sourceUser = "user"
 
 // nativeUsageAttrs copies Completer usage onto slog. Omit the keys when the
 // provider sent nothing so Gantree can keep using chars/4 without a fake 0.

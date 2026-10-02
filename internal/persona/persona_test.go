@@ -84,26 +84,11 @@ func TestLoad_StampsSelfAndPersona(t *testing.T) {
 	if strings.Contains(got, "stale") || strings.Contains(got, "stale rule") {
 		t.Fatalf("stale kernel text kept: %q", got)
 	}
-	if !strings.Contains(got, "north-star aims") || !strings.Contains(got, "- dry humor") {
+	if !strings.Contains(got, "Repo facts are memory") || !strings.Contains(got, "- dry humor") {
 		t.Fatalf("SELF stamp missing: %q", got)
 	}
-	if !strings.Contains(got, "A north-star is one sentence") || !strings.Contains(got, "hold mem") ||
-		!strings.Contains(got, "A vibe word is not a joke") {
+	if !strings.Contains(got, "How this human likes the work done") || !strings.Contains(got, "hold mem") {
 		t.Fatalf("PERSONA stamp missing: %q", got)
-	}
-	if !strings.Contains(got, "## Location pins") || !strings.Contains(got, "[location]") {
-		t.Fatalf("location stamp missing: %q", got)
-	}
-	if !strings.Contains(got, "## Follow-up") || !strings.Contains(got, "[wait]") {
-		t.Fatalf("follow-up stamp missing: %q", got)
-	}
-	if !strings.Contains(got, "## Reactions") || !strings.Contains(got, "[react <emoji>]") ||
-		!strings.Contains(got, "👎") || !strings.Contains(got, "[input] spoken") {
-		t.Fatalf("reactions stamp missing: %q", got)
-	}
-	if !strings.Contains(got, "Pendant GPS") || !strings.Contains(got, "maps `near`") ||
-		strings.Contains(got, "A Telegram location or venue updates") {
-		t.Fatalf("location stamp still Telegram-only: %q", got)
 	}
 }
 
@@ -128,18 +113,8 @@ func TestSyncKernel_RewritesPersonaSection(t *testing.T) {
 	if strings.Contains(got, "- stale") {
 		t.Fatalf("stale section kept: %q", got)
 	}
-	if !strings.Contains(got, "A north-star is one sentence") || !strings.Contains(got, "## Memory hygiene") ||
-		!strings.Contains(got, "## Follow-up") {
+	if !strings.Contains(got, "How this human likes the work done") || !strings.Contains(got, "## Memory hygiene") {
 		t.Fatalf("sync missing kernel or rest of file: %q", got)
-	}
-	if !strings.Contains(got, "## Location pins") {
-		t.Fatalf("sync missing location section: %q", got)
-	}
-	if !strings.Contains(got, "## Follow-up") || !strings.Contains(got, "[wait]") {
-		t.Fatalf("sync missing follow-up section: %q", got)
-	}
-	if !strings.Contains(got, "## Reactions") || !strings.Contains(got, "[react <emoji>]") {
-		t.Fatalf("sync missing reactions section: %q", got)
 	}
 }
 
@@ -184,7 +159,7 @@ func TestSyncKernel_MigratesAndRemovesLegacy(t *testing.T) {
 			t.Fatalf("migrated PERSONA.md missing %q: %q", want, got)
 		}
 	}
-	if !strings.Contains(got, "A north-star is one sentence") {
+	if !strings.Contains(got, "How this human likes the work done") {
 		t.Fatalf("stamp missing after migrate: %q", got)
 	}
 
@@ -254,11 +229,35 @@ func TestResolveTimezone_PrefersPersonaMarkdown(t *testing.T) {
 		t.Fatalf("name=%q source=%q loc=%v", name, source, loc)
 	}
 	name, _, source = persona.ResolveTimezone("", "America/New_York")
-	if name != "America/New_York" || source != "CRON_TZ" {
+	if name != "America/New_York" || source != "fallback" {
 		t.Fatalf("fallback name=%q source=%q", name, source)
 	}
 	name, loc, source = persona.ResolveTimezone("", "")
 	if name != "America/Los_Angeles" || loc == nil {
 		t.Fatalf("empty fallback name=%q source=%q", name, source)
+	}
+}
+
+func TestSyncKernel_DropsRetiredSections(t *testing.T) {
+	dir := t.TempDir()
+	old := "# PERSONA.md\n\n## Location pins\n\n- gps\n\n## Follow-up\n\n- [wait]\n\n## Reactions\n\n- [react]\n\n## Voice\n\nkeep me\n"
+	if err := os.WriteFile(filepath.Join(dir, "PERSONA.md"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persona.SyncKernel(dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "PERSONA.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, gone := range []string{"## Location pins", "## Follow-up", "## Reactions", "[wait]", "gps"} {
+		if strings.Contains(got, gone) {
+			t.Fatalf("retired %q kept: %q", gone, got)
+		}
+	}
+	if !strings.Contains(got, "## Voice\n\nkeep me") || !strings.Contains(got, "## Self-notes") {
+		t.Fatalf("lost the rest of the file: %q", got)
 	}
 }

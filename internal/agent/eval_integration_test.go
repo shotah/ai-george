@@ -5,7 +5,7 @@ package agent_test
 // Live behavioral eval — docs/eval_setup.md. Never in `go test ./...`:
 //
 //	make integration-test              # sources .env, 3 runs per fixture
-//	make integration-test EVAL_ARGS='-eval.n=10 -eval.only=scoop_at_2,planner_gym_no_workout'
+//	make integration-test EVAL_ARGS='-eval.n=10 -eval.only=edit_then_check'
 //
 // Each fixture under testdata/eval runs N times against the configured model
 // with the shipped persona seed and canned tools; every run must pass. A rule
@@ -13,6 +13,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -68,6 +69,12 @@ func TestEval_Live(t *testing.T) {
 	evalLiveTools = evalLiveCatalog
 	t.Logf("model %s at %s; reasoning_effort %q; %d run(s) per fixture; persona %s", model, baseURL, effort, *evalN, evalPersonaPath)
 
+	assertCodingCatalog(t, evalLiveCatalog(t))
+	assertCodingHostFailSoft(t)
+	if t.Failed() {
+		t.FailNow()
+	}
+
 	selected := evalSelected()
 	var total evalTotals
 	for _, fx := range loadEvalFixtures(t, evalFixtureDir) {
@@ -79,31 +86,21 @@ func TestEval_Live(t *testing.T) {
 			var sub evalTotals
 			for i := 1; i <= *evalN; i++ {
 				ctx, cancel := context.WithTimeout(context.Background(), evalTurnTimeout)
-				mornings := runEvalMornings(ctx, t, completer, fx)
-				var fails []string
-				var last evalOutcome
-				for _, m := range mornings {
-					last = m.Out
-					fails = append(fails, checkEval(ctx, m.Out, m.Expect)...)
-					if m.Differ && sameMorningLine(m.PrevLine, morningReply(m.Out)) {
-						fails = append(fails, "same line as the previous morning")
-					}
-					sub.add(m.Out, overBudget(m.Out, m.Expect) != "")
-				}
+				out := runEvalFixture(ctx, t, completer, fx)
+				fails := checkEval(ctx, out, fx.Expect)
 				cancel()
-				over := overBudget(last, fx.Expect)
+				over := overBudget(out, fx.Expect)
+				sub.add(out, over != "")
 				if len(fails) > 0 {
-					t.Errorf("run %d/%d FAIL: %s\n%s", i, *evalN, strings.Join(fails, "; "), describeEval(last))
+					t.Errorf("run %d/%d FAIL: %s\n%s", i, *evalN, strings.Join(fails, "; "), describeEval(out))
 					continue
 				}
 				if over != "" {
 					over = " (" + over + ")"
 				}
-				t.Logf("run %d/%d ok%s: %s — %s", i, *evalN, over, describeCost(last), describeBatches(last))
+				t.Logf("run %d/%d ok%s: %s — %s", i, *evalN, over, describeCost(out), describeBatches(out))
 				if *evalVerbose {
-					for _, m := range mornings {
-						t.Log(describeEval(m.Out))
-					}
+					t.Log(describeEval(out))
 				}
 			}
 			t.Logf("%s: %s", fx.Name, sub.String())
@@ -173,6 +170,224 @@ func fetchLiveCatalog(t *testing.T) ([]provider.ToolDef, error) {
 	defs := host.Tools()
 	t.Logf("live catalog: %d tools from %s", len(defs), manifestPath)
 	return defs, nil
+}
+
+// codingPrefixes are the workspace servers. Their live tools/list is the
+// registration the fixture grades; a renamed release fails here, before a
+// model call.
+var codingWant = map[string][]string{
+	"fs":    {"file_create", "file_get", "file_list", "file_patch", "file_search"},
+	"git":   {"commit_create", "commits_list", "diff_get", "stage_update", "status_get"},
+	"shell": {"command_run"},
+}
+
+// Names the model may invent. They must not be registered.
+var codingForbidden = []string{"file_update", "file_grep", "grep", "git_status", "run_command"}
+
+func assertCodingCatalog(t *testing.T, defs []provider.ToolDef) {
+	t.Helper()
+	byPrefix := map[string][]string{}
+	for _, d := range defs {
+		prefix, base, ok := strings.Cut(d.Name, "__")
+		if !ok {
+			continue
+		}
+		if _, want := codingWant[prefix]; want || prefix == "github" {
+			byPrefix[prefix] = append(byPrefix[prefix], base)
+		}
+		if slices.Contains(codingForbidden, base) {
+			t.Errorf("live catalog registered %s", d.Name)
+		}
+	}
+	for prefix, want := range codingWant {
+		got := append([]string(nil), byPrefix[prefix]...)
+		slices.Sort(got)
+		wantSorted := append([]string(nil), want...)
+		slices.Sort(wantSorted)
+		t.Logf("live catalog %s: %s", prefix, strings.Join(got, ", "))
+		if !slices.Equal(got, wantSorted) {
+			t.Errorf("live catalog %s = %q, want %q", prefix, strings.Join(got, ", "), strings.Join(wantSorted, ", "))
+		}
+	}
+	if gh := byPrefix["github"]; len(gh) > 0 {
+		slices.Sort(gh)
+		t.Logf("live catalog github: %s", strings.Join(gh, ", "))
+	}
+}
+
+// assertCodingHostFailSoft boots the fetched binaries twice: a non-git
+// directory must still list and patch, with git the server that skips; a
+// manifest without shell must drop command_run and leave fs and git up.
+func assertCodingHostFailSoft(t *testing.T) {
+	t.Helper()
+	assertNonGitSkipsGit(t)
+	assertOmitShell(t)
+}
+
+func assertNonGitSkipsGit(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "greet.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := startCodingHost(t, codingManifest(root, true))
+	logCodingHealth(t, "non-git", host)
+	if !serverSkipped(host, "git") {
+		t.Errorf("git should skip when --root is not a git repo")
+	}
+	for _, name := range []string{"fs", "shell"} {
+		if serverSkipped(host, name) {
+			t.Errorf("%s skipped on a non-git directory", name)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	listed, err := host.Call(ctx, "fs__file_list", json.RawMessage(`{"path":"."}`))
+	if err != nil {
+		t.Fatalf("fs__file_list: %v", err)
+	}
+	if !strings.Contains(listed, "greet.txt") {
+		t.Fatalf("fs__file_list = %q, want greet.txt", listed)
+	}
+	got, err := host.Call(ctx, "fs__file_get", json.RawMessage(`{"path":"greet.txt"}`))
+	if err != nil {
+		t.Fatalf("fs__file_get: %v", err)
+	}
+	if !strings.Contains(got, "hi") {
+		t.Fatalf("fs__file_get = %q, want hi", got)
+	}
+	diff := "--- greet.txt\n+++ greet.txt\n@@ -1 +1 @@\n-hi\n+hello\n"
+	patched, err := host.Call(ctx, "fs__file_patch", json.RawMessage(mustJSON(map[string]string{
+		"path": "greet.txt",
+		"diff": diff,
+	})))
+	if err != nil {
+		t.Fatalf("fs__file_patch: %v", err)
+	}
+	t.Logf("fs__file_patch: %s", patched)
+	body, err := os.ReadFile(filepath.Join(root, "greet.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "hello") {
+		t.Fatalf("greet.txt = %q after patch, want hello", body)
+	}
+}
+
+func assertOmitShell(t *testing.T) {
+	t.Helper()
+	root := moduleRoot(t)
+	host := startCodingHost(t, codingManifest(root, false))
+	logCodingHealth(t, "no-shell", host)
+	for _, name := range []string{"fs", "git"} {
+		if serverSkipped(host, name) {
+			t.Errorf("%s skipped when shell is omitted", name)
+		}
+	}
+	names := toolNames(host)
+	for _, want := range []string{"fs__file_get", "fs__file_patch", "git__status_get"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("omit shell: missing %s (have %s)", want, strings.Join(names, ", "))
+		}
+	}
+	if slices.Contains(names, "shell__command_run") {
+		t.Errorf("omit shell: shell__command_run still registered")
+	}
+}
+
+func codingManifest(root string, withShell bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `
+[[server]]
+name = "fs"
+command = "fs-mcp"
+args = ["--root", %q, "--tool-tier", "core"]
+
+[[server]]
+name = "git"
+command = "git-mcp"
+args = ["--root", %q, "--tool-tier", "core"]
+`, root, root)
+	if withShell {
+		fmt.Fprintf(&b, `
+[[server]]
+name = "shell"
+command = "shell-mcp"
+args = ["--root", %q]
+`, root)
+	}
+	return b.String()
+}
+
+func startCodingHost(t *testing.T, manifest string) *mcp.Host {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.toml")
+	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	host, err := mcp.Start(ctx, mcp.Options{
+		ManifestPath: path,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("mcp start: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	return host
+}
+
+func logCodingHealth(t *testing.T, label string, host *mcp.Host) {
+	t.Helper()
+	for _, s := range host.ServerHealth() {
+		t.Logf("%s %s state=%s reason=%s note=%s", label, s.Name, s.State, s.Reason, s.Note)
+	}
+}
+
+func serverSkipped(host *mcp.Host, name string) bool {
+	for _, s := range host.ServerHealth() {
+		if s.Name == name {
+			return s.State == mcp.ServerSkipped
+		}
+	}
+	return true
+}
+
+func toolNames(host *mcp.Host) []string {
+	var names []string
+	for _, d := range host.Tools() {
+		names = append(names, d.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
+	}
+}
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 // evalTotals is the cost roll-up the bake-off compares: mean rounds, mean

@@ -1,0 +1,41 @@
+{
+  "name": "parallel_patches",
+  "why": "Two files: read both in one batch, then patch both in one batch. Parallel inside a step, the chain between steps.",
+  "inbound": "Rename Hello to Greet in a.go and a_test.go.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "result": "error: no such file\n",
+      "by_args": [
+        { "args_regex": "a_test\\.go", "result": "package greet\n\nimport \"testing\"\n\nfunc TestHello(t *testing.T) {\n\tif Hello(\"bob\") != \"hello bob\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n" },
+        { "args_regex": "\\ba\\.go", "result": "package greet\n\nfunc Hello(name string) string { return \"hello \" + name }\n" }
+      ]
+    },
+    {
+      "name": "fs__file_patch",
+      "result": "error: no such file\n",
+      "by_args": [
+        { "args_regex": "a_test\\.go", "result": "patched: a_test.go\n" },
+        { "args_regex": "\\ba\\.go", "result": "patched: a.go\n" }
+      ]
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "same_round": [
+      [
+        { "name": "fs__file_get", "args_regex": "\"path\":\"(\\./)?a\\.go\"" },
+        { "name": "fs__file_get", "args_regex": "a_test\\.go" }
+      ],
+      [
+        { "name": "fs__file_patch", "args_regex": "\"path\":\"(\\./)?a\\.go\".*Greet|Greet.*\"path\":\"(\\./)?a\\.go\"" },
+        { "name": "fs__file_patch", "args_regex": "a_test\\.go.*Greet|Greet.*a_test\\.go" }
+      ]
+    ],
+    "order": ["fs__file_get", "fs__file_patch"],
+    "tools_not_called": ["git__commit_create", "self_note"],
+    "reply_regex": "Greet"
+  }
+}

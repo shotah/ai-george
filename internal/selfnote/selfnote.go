@@ -1,7 +1,7 @@
-// Package selfnote persists SELF.md — personality notes the agent maintains
-// about itself (voice, humor, running jokes, rituals) so who it has become
-// survives /new and history trimming. SELF.md is the only persona file the
-// agent may write; PERSONA.md stays operator-only.
+// Package selfnote persists SELF.md — the human's coding taste as the agent
+// has learned it (review style, commit shape, what to never do), so it
+// survives /new, history trimming, and a change of repo. SELF.md is the only
+// persona file the agent may write; PERSONA.md stays operator-only.
 package selfnote
 
 import (
@@ -25,14 +25,12 @@ const MaxChars = 4096
 // concatenated persona (and to a human reading the file). The append-only
 // warning matters: models otherwise treat self_note like a rewrite and spam
 // near-duplicate bullets until /new distill can merge them.
-const Header = "# SELF.md — Who You Are Becoming\n\n" +
+const Header = "# SELF.md — How This Human Works\n\n" +
 	"> Agent-written file. Cap ~4KB; the operator may prune any line.\n" +
 	">\n" +
 	"> **`self_note` APPENDS one new `-` line — it does NOT overwrite this file.**\n" +
-	"> Do not re-note something already listed below. Skip if the vibe or north-star is already here.\n" +
-	"> A few north-star aims (how you show up for months) belong here. Progress logs are memory, not this file.\n" +
-	"> Distill on `/new` merges. Keep exact jokes and nicknames. A vibe word\n" +
-	"> (\"dry\") is not a substitute for a quote."
+	"> Do not re-note something already listed below. Repo facts are memory, not this file.\n" +
+	"> Distill on `/new` merges. Keep their exact words."
 
 // Store reads and writes SELF.md. Safe for concurrent use.
 type Store struct {

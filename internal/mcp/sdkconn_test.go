@@ -2,13 +2,10 @@ package mcp
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/shotah/george/internal/channel"
 )
 
 func TestSDKConn_ListCallClose(t *testing.T) {
@@ -53,7 +50,7 @@ func TestSDKConn_ListCallClose(t *testing.T) {
 	}
 }
 
-func TestSDKConn_ImageContentGoesToPhotoSink(t *testing.T) {
+func TestSDKConn_ImageContentStaysOffModelText(t *testing.T) {
 	ctx := context.Background()
 	type in struct {
 		Prompt string `json:"prompt"`
@@ -87,68 +84,11 @@ func TestSDKConn_ImageContentGoesToPhotoSink(t *testing.T) {
 	conn := &sdkConn{session: session}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	sink := channel.NewPhotoSink()
-	callCtx := channel.WithPhotoSink(ctx, sink)
-	got, err := conn.CallTool(callCtx, "photo_generate", map[string]any{"prompt": "red bike"})
+	got, err := conn.CallTool(ctx, "photo_generate", map[string]any{"prompt": "red bike"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, `"prompt":"red bike"`) {
+	if got != `{"prompt":"red bike","bytes":3}` {
 		t.Fatalf("summary=%q", got)
-	}
-	if strings.Contains(got, `"type":"image"`) {
-		t.Fatalf("image JSON leaked into model text: %q", got)
-	}
-	urls := sink.URLs()
-	if len(urls) != 1 || !strings.HasPrefix(urls[0], "data:image/png;base64,") {
-		t.Fatalf("sink=%v", urls)
-	}
-}
-
-func TestSDKConn_AvatarGetImageStaysOffChat(t *testing.T) {
-	ctx := context.Background()
-	type in struct{}
-	type out struct{}
-
-	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "pendant", Version: "v1"}, nil)
-	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "avatar_get", Description: "face"}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ in) (*mcpsdk.CallToolResult, out, error) {
-		return &mcpsdk.CallToolResult{
-			Content: []mcpsdk.Content{
-				&mcpsdk.TextContent{Text: `{"rev":1,"bytes":3,"path":"/data/images/face.jpg"}`},
-				&mcpsdk.ImageContent{Data: []byte{1, 2, 3}, MIMEType: "image/jpeg"},
-			},
-		}, out{}, nil
-	})
-	t1, t2 := mcpsdk.NewInMemoryTransports()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, _ = server.Connect(ctx, t1, nil)
-	}()
-	t.Cleanup(func() { wg.Wait() })
-
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "george-test", Version: "v1"}, nil)
-	session, err := client.Connect(ctx, t2, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := &sdkConn{session: session}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	sink := channel.NewPhotoSink()
-	callCtx := channel.WithPhotoSink(ctx, sink)
-	got, err := conn.CallTool(callCtx, "avatar_get", map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(got, `"path":"/data/images/face.jpg"`) {
-		t.Fatalf("summary=%q", got)
-	}
-	if strings.Contains(got, "delivered to chat") {
-		t.Fatalf("avatar_get must not pretend the face is a chat photo: %q", got)
-	}
-	if len(sink.URLs()) != 0 {
-		t.Fatalf("sink=%v", sink.URLs())
 	}
 }

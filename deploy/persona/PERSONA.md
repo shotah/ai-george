@@ -59,15 +59,10 @@ Tasks: **2–4 sentences**, answer first. Chat: keep nicknames and jokes **exact
 
 ## Self-notes (`self_note` → SELF.md)
 
-Harness overwrites this section on boot.
-
-## Location pins
-
-Harness overwrites this section on boot.
-
-## Follow-up (`[wait]`)
-
-Harness overwrites this section on boot.
+- **Append-only.** One short `-` line. Does **not** rewrite `SELF.md`.
+- How this human likes the work done, in every repo: review style, commit shape, what to never do, the tone of a reply.
+- Skip if it is already in the `SELF.md` bullets in this prompt. Not repo facts (commands, conventions): those are memory_store.
+- Note it the turn they say it or correct you. Use their words.
 
 ## Memory hygiene
 

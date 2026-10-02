@@ -14,10 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shotah/george/internal/aims"
 	"github.com/shotah/george/internal/channel"
-	"github.com/shotah/george/internal/cron"
-	"github.com/shotah/george/internal/here"
 	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/mcpenable"
 	"github.com/shotah/george/internal/memory"
@@ -62,34 +59,17 @@ const budgetExhaustedNote = "[system] Tool budget exhausted: all %d tool rounds 
 // It is recency-weighted (end of the cached prefix): fan out independent
 // calls in one Completer response so the standing prompt is not re-billed
 // per lookup. One visible line for the batch feeds TOOL_TRACE.
-const toolNarrationNote = `When you need tools, emit every independent call in this same response — they run together. One short visible line for the whole batch (e.g. "Checking calendar, mail, and memory"), under a dozen words, then the calls. A later round is only for calls that need a prior result.`
+const toolNarrationNote = `When you need tools, emit every independent call in this same response — they run together. One short visible line for the whole batch (e.g. "Reading the file and checking git status"), under a dozen words, then the calls. A later round is only for calls that need a prior result.`
 
 // enableReviewNote sits after the clock when dynamic tools are on so the
 // on/off index is not dropped in a long chat. mcp_enable must precede the
 // real MCP call — schemas land on the next Completer round of this turn.
 const enableReviewNote = "[system] Review [mcp prefixes] on vs off this turn. If you need a tool whose prefix is off, call mcp_enable with every prefix this turn needs (one call). Schemas land on the next model call in this same turn — then call the tool. Do not claim you lack a tool that is listed off."
 
-// cronToolFirstNote sits after the clock on scheduled turns so the last
-// instruction is "tools first" — cron user text otherwise reads like a
-// finished-report spec and small models draft numbers instead of calling.
-const cronToolFirstNote = "[system] Scheduled turn: if this job needs live data, review [mcp prefixes] and mcp_enable any off prefix this job needs, then emit independent tool calls now in one response and wait for results. Do not invent metrics, events, or search results. Write the user-facing report only after tool results are in context. If no tools are needed, reply now."
-
-// plannerToolFirstNote sits after the clock on the daily planning session.
-// One burn: pull live context, set today's crons, or [silent] when the day is off.
-const plannerToolFirstNote = "[system] Daily planner turn: one session for the day, one clock time. Review [mcp prefixes] on vs off. [hours], [aims], [todo], [loops], and [wakes] are already in [harness] — do not memory_recall or cron_list for those. Emit independent tool calls now — calendar, mail, Garmin (mcp_enable a prefix if it is off). Do not invent numbers or events. Then aim_log yesterday from those results (ref, every aim the event touches, 0 for a planned rest; on a quit aim a clean day is +1) and cron_schedule today's cues with memory_subject aim/<area>. Read [progress] and follow the ladder (a streak credit is note=praised); never repeat the last note. aim_history before changing the plan. A slip they already owned gets no lecture. Ask first before sending mail, spending, or posting. An event they already named: create it this turn, don't ask. Sick, vacation, holiday, or a quiet day they asked for: [silent], no nag crons. If this clock does not match their life, cron_schedule when=HH:MM repeat=planner (that persists; do not add a second planner). No [aims] line: ask ONE months-scale question — do not invent. A real empty calendar: ask ONE what they want on it today — not [silent], never agree-and-stop. If [room] is stamped and stale, redress it in the same batch. If you asked a question they should answer, put [wait] on its own line. The reply is the first [progress] rung, and [silent] is only when that rung says so: streak ≥3 and the last note is not praised → one credit line and aim_log note=praised (an empty today is not a rest day). Yesterday is negative and the last note is nudged → ask what is in the way, [wait], aim_log note=asked. A dinner or other meal on today's calendar against a weight aim → one meal line and aim_log that dinner, not [silent]. A weigh-in is aims score 0 with the tool's number on value, then [silent]. note=quiet is only for a slip the human already told you about. If weeks: is in [progress], start the reply with one line per aim from those numbers (direction, slope, block, the effect line if it is there); that is not [silent], and a missing r= is not a correlation. No weeks: line: do not summarize the week. A [todo] item whose words name today: cron_schedule its cue now with memory_subject=todo/<slug>, and the line says do it now — not good luck, not later. Each one overdue by its words, and the oldest past a week, is one line, a different line from yesterday, do it now — not the list, not [silent], never \"shall I drop it\". This turn was not asked by them: no closer, no \"Anything else\". [silent] stays [silent]."
-
-// waitReplyNote sits after the clock when follow-up is wired. [wait] is a
-// reply token like [silent], not a tool — models otherwise invent wait_for_reply.
-const waitReplyNote = `[system] Follow-up is not a tool. A question they should answer: [wait] on its own line (they never see it). [nowait] drops the wait. If [conversation] waiting_for_reply=true, do not ask a new different question.`
-
 // theaterCueMaxChars: a stop reply this long is already the answer. Matching
 // "I've added…" or a server__tool name inside a design essay must not start
 // another Completer round — Gemini often returns empty on that follow-up.
 const theaterCueMaxChars = 1500
-
-// toolsFooterNudge fires when the model prints the cron audit line
-// ("— tools: web_search") as the whole reply instead of tool_calls or text.
-const toolsFooterNudge = `[system] That "— tools:" line is a harness audit footer, not a user-visible reply and not a tool call. Nothing ran from it. Write the actual answer as plain assistant text. If you still need data, emit real tool_calls via the tools API. Do not print "— tools:".`
 
 // Options configures the agent.
 type Options struct {
@@ -105,15 +85,11 @@ type Options struct {
 	ToolTrace string
 	Logger    *slog.Logger
 	StartedAt time.Time
-	// Location is the operator timezone for the per-turn temporal anchor (CRON_TZ).
+	// Location is the operator timezone for the per-turn temporal anchor.
 	Location *time.Location
 	TZName   string // IANA name for display (e.g. America/Los_Angeles)
 	// Now freezes the [harness] clock. Nil is time.Now. Tests pin Completer dumps.
 	Now func() time.Time
-	// CoalesceSettle waits this long after the last bubble before injecting
-	// one steer into the live turn (or starting a new turn if the first
-	// already finished). 0 disables. Production default is DefaultCoalesceSettle.
-	CoalesceSettle time.Duration
 	// SpinupNotice posts a "still working" line once a turn has gone this long
 	// without model output. The first turn of the process posts immediately
 	// instead of waiting. 0 disables both notices.
@@ -121,30 +97,12 @@ type Options struct {
 	// SelfNotes is optional; when set, /new distills the dying session's
 	// personality into SELF.md before the reset (see internal/selfnote).
 	SelfNotes SelfNotes
-	// Consolidator is optional; /memstats reads last_run from it when set.
-	Consolidator *memory.Consolidator
-	// MCPManifest is the path to mcp.toml for /auth (chat OAuth). Empty disables /auth.
-	MCPManifest string
-	// Examples is optional; enables /examples (instant + on/off for proactive pings).
-	Examples ExamplesControl
-	// Planner is optional; enables /planner (on|off|HH:MM for the daily planning session).
-	Planner PlannerControl
-	// Wait is optional; arms follow-up pokes when the model replies with [wait].
-	Wait WaitControl
-	// Wakes is optional (*cron.Store); stamps this session's next jobs as [wakes].
-	Wakes WakeLister
-	// Room is optional (the pendant channel); stamps the phone's look as [room]
-	// when the pendant MCP is in the catalog.
-	Room RoomSource
 	// HistoryStripFillers applies session.StripFillerHistory at prompt time.
 	HistoryStripFillers bool
 	// Enable filters MCP schemas per session (nil = publish the full catalog).
 	Enable *mcpenable.Store
 	// EnableForce is always-published prefixes when Enable is set.
 	EnableForce mcpenable.Force
-	// Aims is optional. It stamps the rating on [aims], [progress] on the
-	// daily planner turn, and serves /aims. Nil leaves those stamps off.
-	Aims *aims.Store
 }
 
 // Agent runs one objective: Completer rounds with parallel tool batches until a reply.
@@ -172,31 +130,15 @@ type Agent struct {
 	sessionMu    sync.Mutex
 	sessionLocks map[string]*sessionGate
 
-	coalesceSettle time.Duration
-	coalesceMu     sync.Mutex
-	coalesce       map[string]*coalesceSession
-
 	spinupNotice time.Duration
 	warmed       atomic.Bool // set once any model call has returned
 
 	perf *perfRing
 
-	// consolidator is optional; used by /memstats for last_run (builtin only).
-	consolidator *memory.Consolidator
-
-	mcpManifest string
-	examples    ExamplesControl
-	planner     PlannerControl
-	wait        WaitControl
-	wakes       WakeLister
-	roomMu      sync.RWMutex
-	room        RoomSource
-
 	stripFillers bool
 
 	enable      *mcpenable.Store
 	enableForce mcpenable.Force
-	aims        *aims.Store
 }
 
 // New creates an Agent. Completer and Sessions are required.
@@ -234,52 +176,29 @@ func New(opts Options) (*Agent, error) {
 		tzName = loc.String()
 	}
 	a := &Agent{
-		completer:      opts.Completer,
-		sessions:       opts.Sessions,
-		tools:          opts.Tools,
-		memory:         opts.Memory,
-		selfNotes:      opts.SelfNotes,
-		model:          opts.Model,
-		maxToolIters:   maxIters,
-		streamReplies:  opts.StreamReplies,
-		toolTrace:      toolTrace,
-		log:            log,
-		startedAt:      started,
-		loc:            loc,
-		tzName:         tzName,
-		nowFn:          opts.Now,
-		coalesceSettle: opts.CoalesceSettle,
-		spinupNotice:   opts.SpinupNotice,
-		consolidator:   opts.Consolidator,
-		mcpManifest:    strings.TrimSpace(opts.MCPManifest),
-		examples:       opts.Examples,
-		planner:        opts.Planner,
-		wait:           opts.Wait,
-		wakes:          opts.Wakes,
-		room:           opts.Room,
-		stripFillers:   opts.HistoryStripFillers,
-		enable:         opts.Enable,
-		enableForce:    opts.EnableForce,
-		aims:           opts.Aims,
-		perf:           newPerfRing(started),
+		completer:     opts.Completer,
+		sessions:      opts.Sessions,
+		tools:         opts.Tools,
+		memory:        opts.Memory,
+		selfNotes:     opts.SelfNotes,
+		model:         opts.Model,
+		maxToolIters:  maxIters,
+		streamReplies: opts.StreamReplies,
+		toolTrace:     toolTrace,
+		log:           log,
+		startedAt:     started,
+		loc:           loc,
+		tzName:        tzName,
+		nowFn:         opts.Now,
+		spinupNotice:  opts.SpinupNotice,
+		stripFillers:  opts.HistoryStripFillers,
+		enable:        opts.Enable,
+		enableForce:   opts.EnableForce,
+		perf:          newPerfRing(started),
 	}
 	a.initTurns()
 	a.SetPersona(opts.Persona)
 	return a, nil
-}
-
-// SetRoom binds the pendant mouth after New (the channel is built after the
-// agent in run.go). Nil turns the [room] stamp off.
-func (a *Agent) SetRoom(src RoomSource) {
-	a.roomMu.Lock()
-	a.room = src
-	a.roomMu.Unlock()
-}
-
-func (a *Agent) roomSource() RoomSource {
-	a.roomMu.RLock()
-	defer a.roomMu.RUnlock()
-	return a.room
 }
 
 // SetPersona replaces the system persona text (e.g. after SIGHUP reload).
@@ -326,31 +245,18 @@ func (a *Agent) personaText() string {
 func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error) {
 	msg.Text = stripHarnessContext(msg.Text)
 	text := strings.TrimSpace(msg.Text)
-	if text == "" && len(msg.Images) == 0 {
+	if text == "" {
 		return "", nil
 	}
 
-	// Bind cron_* / watch_* tools to this conversation (not a chat destination).
-	ctx = cron.WithDelivery(ctx, cron.Delivery{
-		SessionID: msg.SessionID,
-	})
 	ctx = mcpenable.WithSession(ctx, msg.SessionID)
 
-	// /cancel must not take the session lock — it runs on a parallel Telegram
-	// worker while the in-flight turn still holds that lock.
+	// /cancel must not take the session lock — the in-flight turn holds it.
 	if cmd, ok := parseCommand(text); ok && (cmd == "/cancel" || cmd == "/stop") {
-		a.coalesceClear(msg.SessionID)
 		if a.Cancel(msg.SessionID) {
 			return "cancelled — stopped the in-flight turn (tools that already finished are not undone)", nil
 		}
 		return "nothing in progress to cancel", nil
-	}
-
-	// /auth accepts args (/auth strava <code>) so it cannot use parseCommand.
-	if server, arg, ok := parseAuthCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handleAuth(ctx, server, arg)
 	}
 
 	if cmd, prefix, ok := parseEnableHoldCommand(text); ok {
@@ -359,43 +265,11 @@ func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error)
 		return a.handleEnableHold(ctx, msg.SessionID, cmd, prefix)
 	}
 
-	// /examples accepts on|off|true|false.
-	if arg, ok := parseExamplesCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handleExamples(ctx, channelDelivery{SessionID: msg.SessionID}, arg)
-	}
-
-	if args, ok := parseAimsCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handleAims(ctx, args)
-	}
-
-	if args, ok := parseTodoCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handleTodo(ctx, args)
-	}
-
-	// /planner accepts on|off|true|false|HH:MM.
-	if arg, ok := parsePlannerCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handlePlanner(ctx, channelDelivery{SessionID: msg.SessionID}, arg)
-	}
-
 	if cmd, ok := parseCommand(text); ok {
 		switch cmd {
 		case "/new", "/clear":
 			unlock := a.lockSession(msg.SessionID)
 			defer unlock()
-			a.coalesceClear(msg.SessionID)
-			if a.wait != nil {
-				if err := a.wait.OnUserTurn(ctx, msg.SessionID); err != nil {
-					a.log.Warn("wait clear on reset failed", "err", err)
-				}
-			}
 			parked := a.parkSessionFacts(ctx, msg.SessionID)
 			distilled := false
 			if a.selfNotes != nil {
@@ -406,9 +280,9 @@ func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error)
 			}
 			switch {
 			case distilled && parked:
-				return "session reset — personality distilled into SELF.md; session facts parked in memory", nil
+				return "session reset — taste distilled into SELF.md; session facts parked in memory", nil
 			case distilled:
-				return "session reset — personality distilled into SELF.md", nil
+				return "session reset — taste distilled into SELF.md", nil
 			case parked:
 				return "session reset — session facts parked in memory", nil
 			default:
@@ -445,50 +319,20 @@ func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error)
 		}
 	}
 
-	// Multi-bubble: idle runs now; in-flight follow-ups settle then steer
-	// the live loop (Completer only). Cron/watch/reactions skip.
-	if a.coalesceSettle > 0 && !skipCoalesce(text) {
-		joined, run, err := a.coalesceAccept(ctx, msg)
-		if err != nil {
-			return "", err
-		}
-		if !run {
-			return "", nil
-		}
-		msg = joined
-		msg.Text = stripHarnessContext(msg.Text)
-		text = strings.TrimSpace(msg.Text)
-	}
-
-	// Their 👍 on an agent message, nothing pending: recorded, no model call.
-	if handled, err := a.triageReaction(ctx, msg, text); handled || err != nil {
-		return "", err
-	}
-
 	return a.runTurn(ctx, msg, text)
 }
 
-// runTurn executes one model turn for an already-coalesced (or single) message.
+// runTurn executes one model turn for one inbound message.
 func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (string, error) {
-	storeText := messageStoreText(msg)
-
 	unlock := a.lockSession(msg.SessionID)
 	defer unlock()
 
-	turnCtx, finish := a.beginTurn(ctx, msg.SessionID, storeText, msg.Images)
+	turnCtx, finish := a.beginTurn(ctx, msg.SessionID, text)
 	defer func() {
 		if finish() {
 			a.log.Info("agent turn cancelled", "session_id", msg.SessionID)
 		}
 	}()
-
-	// Their text or their reaction is their reply: the wait is answered and
-	// the follow-up pokes are off. (An idle 👍 never gets here — triage.)
-	if src := turnSource(text); a.wait != nil && (src == sourceUser || src == sourceReaction) {
-		if err := a.wait.OnUserTurn(turnCtx, msg.SessionID); err != nil {
-			a.log.Warn("wait clear on user turn failed", "err", err)
-		}
-	}
 
 	history, err := a.sessions.Messages(turnCtx, msg.SessionID)
 	if err != nil {
@@ -517,26 +361,17 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 			Content: indexBlock,
 		})
 	}
-	// Prior scheduled / watch replies are a few-shot template for inventing
-	// the next digest. Keep them in SQLite; omit them from this turn's prompt.
-	if src := turnSource(text); src == "cron" || src == "watch" {
-		history = dropCronHistory(history)
-	}
 	// Prompt-only: SQLite keeps the original. Last 5 messages stay verbatim.
 	if a.stripFillers {
 		history = session.StripFillerHistory(history)
 	}
 	for _, h := range history {
-		content := h.Content
-		if h.Role == session.RoleAssistant {
-			content = stripToolsFooter(content)
-			if strings.TrimSpace(content) == "" {
-				continue
-			}
+		if h.Role == session.RoleAssistant && strings.TrimSpace(h.Content) == "" {
+			continue
 		}
 		messages = append(messages, provider.Message{
 			Role:    provider.Role(h.Role),
-			Content: content,
+			Content: h.Content,
 		})
 	}
 	// Volatile per-turn blocks (hydration, clock) go AFTER history so the
@@ -546,18 +381,12 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 	// Everything appended from here is re-evaluated every turn, so its size —
 	// not the total prompt — is what first_token_ms actually measures.
 	shape := promptShape{stableEnd: len(messages)}
-	hydrateQuery := text
-	if hydrateQuery == "" {
-		hydrateQuery = storeText
-	}
 	loc, tzName := a.clockZone()
-	var hz horizon
 	if a.memory != nil {
-		hz = a.loadHorizon(turnCtx)
-		entries, err := a.memory.Hydrate(turnCtx, hydrateQuery, 30)
+		entries, err := a.memory.Hydrate(turnCtx, text, 30)
 		if err != nil {
 			a.log.Warn("memory hydrate failed", "err", err)
-		} else if block := memory.FormatHydration(hz.dropStamped(entries), loc); block != "" {
+		} else if block := memory.FormatHydration(entries, loc); block != "" {
 			shape.hydration = (len(block) + 3) / 4
 			messages = append(messages, provider.Message{
 				Role:    provider.RoleSystem,
@@ -571,65 +400,20 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 			Content: block,
 		})
 	}
-	userMsg := provider.Message{
-		Role:    provider.RoleUser,
-		Content: storeText,
-	}
-	for _, img := range msg.Images {
-		if u := strings.TrimSpace(img.URL); u != "" {
-			userMsg.ImageURLs = append(userMsg.ImageURLs, u)
-		}
-	}
-	// Published before the clock: [room] tells the model whether the pendant
-	// prefix is on this turn or needs mcp_enable first.
 	var toolDefs []provider.ToolDef
-	toolsOff := a.tools == nil || channel.NoToolsFrom(ctx)
-	if !toolsOff {
+	if a.tools != nil {
 		toolDefs = a.publishedTools(turnCtx, msg.SessionID)
 	}
 
 	// Clock is prompt-only, not session history. RoleUser is speech;
 	// a tagged RoleSystem after their words keeps NOW recency-weighted
-	// without looking like they typed it. Leading with [current time]
-	// primed calendar/tool fixation on small local models. Fresh each Handle.
+	// without looking like they typed it. Fresh each Handle.
 	now := a.clockNow().In(loc)
-	if msg.Geo != nil {
-		here.Remember(msg.SessionID, msg.Geo, now)
-	}
-	clock := temporalAnchor(now, tzName)
-	if p, ok := here.Get(msg.SessionID); ok {
-		if line := here.Format(p, now, tzName); line != "" {
-			// Coords first: a 10-line week grid is where small models stop reading.
-			clock = line + "\n" + clock
-		}
-	}
-	if a.memory != nil {
-		clock += a.hoursStamp(turnCtx)
-		var progress string
-		if cron.IsDailyPlannerTurn(text) {
-			progress = a.progressStamp(turnCtx, hz, now)
-		}
-		clock += hz.stamp(now, a.aimNotes(turnCtx, hz, now), progress)
-	}
-	clock += stampLine(a.wakesStamp(turnCtx, msg.SessionID, now))
-	clock += stampLine(surfaceStamp(msg.Surface))
-	clock += stampLine(inputStamp(msg.Input, msg.Surface))
-	clock += stampLine(a.roomStamp(now, toolDefs, toolsOff))
-	clock += stampLine(a.lastContactStamp(turnCtx, msg.SessionID, now))
-	messages = append(messages, userMsg)
-	if block := formatHarnessClock(clock); block != "" {
-		messages = append(messages, provider.Message{
-			Role:    provider.RoleSystem,
-			Content: block,
-		})
-	}
-	if a.wait != nil {
-		messages = append(messages, provider.Message{
-			Role:    provider.RoleSystem,
-			Content: waitReplyNote,
-		})
-	}
-	if block := a.talkFooter(turnCtx, msg.SessionID); block != "" {
+	messages = append(messages, provider.Message{
+		Role:    provider.RoleUser,
+		Content: text,
+	})
+	if block := formatHarnessClock(temporalAnchor(now, tzName)); block != "" {
 		messages = append(messages, provider.Message{
 			Role:    provider.RoleSystem,
 			Content: block,
@@ -641,17 +425,6 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 			Content: enableReviewNote,
 		})
 	}
-
-	if turnSource(text) == "cron" && len(toolDefs) > 0 && !cron.IsFollowUpTurn(text) {
-		note := cronToolFirstNote
-		if cron.IsDailyPlannerTurn(text) {
-			note = plannerToolFirstNote
-		}
-		messages = append(messages, provider.Message{
-			Role:    provider.RoleSystem,
-			Content: note,
-		})
-	}
 	shape.schemas = mcp.EstimateToolSchemaTokens(toolDefs)
 
 	a.log.Debug("agent complete",
@@ -661,56 +434,39 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 		"est_tokens", estTokens(messages)+shape.schemas,
 	)
 
-	userID := strings.TrimSpace(msg.UserID)
-	if userID == "" {
-		userID = strings.TrimSpace(msg.ChatID)
-	}
-	reply, err := a.runLoop(turnCtx, msg.SessionID, userID, messages, toolDefs, shape, turnSource(text))
+	reply, err := a.runLoop(turnCtx, msg.SessionID, strings.TrimSpace(msg.UserID), messages, toolDefs, shape)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return "", nil
 		}
 		return "", err
 	}
+	reply = stripDanglingToolTags(reply)
 
-	stripped := cron.StripWaitTokens(reply)
-	if emoji := cron.ReactEmoji(reply); emoji != "" {
-		stripped = placeReaction(turnCtx, msg, emoji, stripped)
-	}
-	a.flushStream(turnCtx, stripped)
+	a.flushStream(turnCtx, reply)
 
 	if err := a.sessions.Append(turnCtx, msg.SessionID,
-		session.Message{Role: session.RoleUser, Content: a.turnStoreText(msg.SessionID, storeText)},
-		session.Message{Role: session.RoleAssistant, Content: storedAssistantReply(reply)},
+		session.Message{Role: session.RoleUser, Content: text},
+		session.Message{Role: session.RoleAssistant, Content: reply},
 	); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return "", nil
 		}
 		return "", err
 	}
-	if a.wait != nil {
-		if err := a.wait.AfterReply(turnCtx, cron.Delivery{
-			SessionID: msg.SessionID,
-		}, text, reply); err != nil {
-			a.log.Warn("wait after reply failed", "err", err)
-		}
-	}
-	return stripped, nil
+	return reply, nil
 }
 
-// flushStream promotes the draft to a reply before SQLite persist / wait
-// cron, so the mouth is not stuck on a complete italic draft while fold
-// or AfterReply runs. Finish is idempotent; the channel may call it again.
+// flushStream promotes the draft to a reply before the SQLite persist, so
+// the channel is not stuck on a complete draft while the fold runs. Finish
+// is idempotent; the channel may call it again.
 func (a *Agent) flushStream(ctx context.Context, text string) {
 	w, ok := channel.ReplyWriterFrom(ctx)
 	if !ok || !w.Started() {
 		return
 	}
-	if strings.TrimSpace(text) == "" || cron.IsSilentReply(text) {
+	if strings.TrimSpace(text) == "" {
 		return
-	}
-	if p, ok := w.(channel.PhotoAttacher); ok {
-		p.AttachPhotos(channel.PhotoSinkFrom(ctx).URLs())
 	}
 	if err := w.Finish(ctx, text); err != nil {
 		a.log.Warn("stream finish before persist failed", "err", err)
@@ -726,26 +482,13 @@ type promptShape struct {
 	schemas   int // est tokens in the tool schema block
 }
 
-func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages []provider.Message, toolDefs []provider.ToolDef, shape promptShape, source string) (reply string, err error) {
-	if source == "" {
-		source = sourceUser
-	}
+func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages []provider.Message, toolDefs []provider.ToolDef, shape promptShape) (reply string, err error) {
 	streamer, canStream := a.completer.(provider.Streamer)
 	writer, hasWriter := channel.ReplyWriterFrom(ctx)
 	progress, hasProgress := channel.ProgressWriterFrom(ctx)
 	status, hasStatus := channel.StatusWriterFrom(ctx)
 	nudged := false
 	sawTools := false
-	var called []string
-	defer func() {
-		if err != nil || source != "cron" || reply == "" || cron.IsSilentReply(reply) {
-			return
-		}
-		if len(called) == 0 && !cronJobImpliesLiveTools(lastUserContent(messages)) {
-			return
-		}
-		reply = withCronToolFooter(reply, called)
-	}()
 
 	// Trajectory accounting: the standing prompt is re-billed every Completer
 	// call, so progress per invocation (tools / iters, max batch, recoveries)
@@ -784,7 +527,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			modelName = a.model
 		}
 		perf := []any{
-			"source", source,
+			"source", sourceUser,
 			"session_id", sessionID,
 			"outcome", outcome,
 			"iterations", iters,
@@ -800,9 +543,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			"duration_ms", totalMS,
 			"hydration_est_tokens", shape.hydration,
 		}
-		if source == sourceUser || source == sourceReaction || userID != "" {
-			perf = append(perf, "user_id", userID)
-		}
+		perf = append(perf, "user_id", userID)
 		if modelName != "" {
 			perf = append(perf, "model", modelName)
 		}
@@ -831,7 +572,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				genEst:       genEstSum,
 				firstTokenMS: firstTokenMS,
 				volatileEst:  volatileEst,
-				source:       source,
+				source:       sourceUser,
 				outcome:      outcome,
 				cold:         cold,
 			})
@@ -843,17 +584,13 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	budgetWarned := false
 	// User-facing prose from an earlier round this turn. Gemini often returns
 	// empty after a mixed narration+tool call (or after a theater nudge); keep
-	// that text instead of erroring the Telegram handler.
+	// that text instead of erroring the turn.
 	var lastNarration string
 	// The loop grants maxToolIters tool rounds plus one landing call: tools are
 	// withheld on that last call so the model must answer with text — the turn
 	// ends with a real reply (and persisted history) instead of an error that
 	// throws away every tool result it just gathered.
 	for iter := 0; iter <= a.maxToolIters; iter++ {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		messages = a.drainSteers(ctx, sessionID, messages, hasProgress, progress)
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -903,36 +640,26 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		// Stream when enabled and a channel writer is present. Tool-call
 		// responses still come back on the same stream path; onProgress is
 		// skipped once tool deltas appear (see provider.CompleteStream).
-		// Completer uses a child context so a steer can cancel prefill
-		// without aborting in-flight MCP calls (those stay on ctx).
 		streamedRound := a.streamReplies && canStream && hasWriter && !constrained
-		compCtx, releaseComp := a.armCompleter(ctx, sessionID)
 		if streamedRound {
 			tw, hasThinking := writer.(channel.ThinkingWriter)
-			res, err = streamer.CompleteStream(compCtx, req, func(content, thinking string) error {
+			res, err = streamer.CompleteStream(ctx, req, func(content, thinking string) error {
 				if firstTokenAt.IsZero() && (content != "" || thinking != "") {
 					firstTokenAt = time.Now()
 					stopNotice()
 				}
-				content = cron.StripWaitTokensLive(content)
 				if hasThinking {
 					return tw.UpdateThinking(ctx, thinking, content)
 				}
 				return writer.Update(ctx, content)
 			})
 		} else {
-			res, err = a.completer.Complete(compCtx, req)
+			res, err = a.completer.Complete(ctx, req)
 		}
-		releaseComp()
 		callDur := time.Since(callStart)
 		stopNotice()
 		modelTime += callDur
 		if err != nil {
-			if errors.Is(err, context.Canceled) && ctx.Err() == nil {
-				// Steer cancelled Completer only — keep tool messages, retry.
-				iter--
-				continue
-			}
 			if errors.Is(err, provider.ErrEmptyContent) {
 				if prior := strings.TrimSpace(lastNarration); prior != "" {
 					a.log.Warn("model returned empty content; keeping prior reply",
@@ -941,14 +668,6 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						"saw_tools", sawTools,
 						"err", err,
 					)
-					var steered bool
-					messages, prior, steered, err = a.finishText(ctx, sessionID, messages, prior)
-					if err != nil {
-						return "", err
-					}
-					if steered {
-						continue
-					}
 					return prior, nil
 				}
 			}
@@ -1028,7 +747,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				recoveries++
 			}
 		}
-		if c := strings.TrimSpace(res.Content); c != "" && !isToolsFooterOnly(c) {
+		if c := strings.TrimSpace(res.Content); c != "" {
 			lastNarration = c
 		}
 		if len(res.ToolCalls) == 0 {
@@ -1049,14 +768,6 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						a.log.Info("promoting thinking to reply after tool results",
 							"chars", len(think),
 						)
-						var steered bool
-						messages, think, steered, err = a.finishText(ctx, sessionID, messages, think)
-						if err != nil {
-							return "", err
-						}
-						if steered {
-							continue
-						}
 						return think, nil
 					}
 					if !nudged {
@@ -1075,56 +786,13 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				}
 				return "", fmt.Errorf("agent: empty model reply")
 			}
-			// Cron pushes append "— tools: name" for the human. Flash then
-			// few-shots that line as the whole reply (no tool_calls). Do not
-			// ship it; discard a streamed draft so Finish does not keep it.
-			if isToolsFooterOnly(res.Content) {
-				a.log.Warn("model printed tools footer as the reply",
-					"chars", len(res.Content),
-					"iteration", iter+1,
-					"saw_tools", sawTools,
-				)
-				if streamedRound {
-					discardReply(ctx, writer)
-				}
-				if !nudged && !final {
-					nudged = true
-					recoveries++
-					messages = append(messages, provider.Message{
-						Role:    provider.RoleAssistant,
-						Content: res.Content,
-					})
-					// User-role for the same reason as the theater nudge below:
-					// a system block folds to the top on Gemini and the wire
-					// would end on the assistant's own footer.
-					messages = append(messages, provider.Message{
-						Role:    provider.RoleUser,
-						Content: toolsFooterNudge,
-					})
-					continue
-				}
-				if prior := strings.TrimSpace(lastNarration); prior != "" {
-					var steered bool
-					messages, prior, steered, err = a.finishText(ctx, sessionID, messages, prior)
-					if err != nil {
-						return "", err
-					}
-					if steered {
-						continue
-					}
-					return prior, nil
-				}
-				return "", fmt.Errorf("agent: empty model reply")
-			}
 			// Prose that promises a tool ("I'll pull…", mentions server__tool)
 			// or falsely claims one already ran ("I've created…") without any
 			// tool_calls this turn — common small-model failure. Nudge once
 			// before tools. After tools, only catch deferrals ("give me a
 			// moment…") that leave the human hanging — giving up is fine;
 			// stalling is not. (Do not use promisesToolCall after tools: a
-			// honest "google__sheets_… failed" final answer contains "__".)
-			// Cron live-data jobs are a separate miss: the model drafts the
-			// digest (fake scores, agenda) with zero theater cues.
+			// honest "github__issue_get failed" final answer contains "__".)
 			preToolTheater := !sawTools && (promisesToolCall(res.Content, res.Thinking) || claimsToolSuccess(res.Content))
 			if preToolTheater && len(res.Content) >= theaterCueMaxChars {
 				a.log.Info("skipping tool-theater nudge on substantial reply",
@@ -1133,19 +801,13 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				)
 				preToolTheater = false
 			}
-			userContent := lastUserContent(messages)
-			plannerTurn := cron.IsDailyPlannerTurn(userContent)
-			cronSkippedLive := !sawTools && source == "cron" && len(toolDefs) > 0 &&
-				(plannerTurn || cronJobImpliesLiveTools(userContent))
 			deferral := sawTools && defersPendingWork(res.Content)
-			if (preToolTheater || deferral || cronSkippedLive) && !nudged {
+			if (preToolTheater || deferral) && !nudged {
 				a.log.Warn("model narrated tool action in prose without calling",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 					"saw_tools", sawTools,
 					"deferral", deferral,
-					"cron_skipped_live", cronSkippedLive,
-					"planner", plannerTurn,
 				)
 				nudged = true
 				recoveries++
@@ -1161,18 +823,6 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						"Act now: emit the real tool call(s) using exact names from the tools list, " +
 						"OR give a final answer that reports the tool error and stops. Giving up is fine. " +
 						"Do not ask for a moment or promise another attempt without calling a tool."
-				} else if plannerTurn {
-					nudge = "[system] This daily planner turn is the one planning session for the day, not an empty check-in. " +
-						"[hours], [aims], [todo], [loops], and [wakes] are already in [harness] — do not recall them. Call tools now in one response: calendar, mail, Garmin, then aim_log, or cron_schedule. " +
-						"mcp_enable a prefix if it is off and needed. Do not invent events or numbers. " +
-						"If they are sick, on vacation, or off today, reply with exactly [silent] after you have seen the tools. " +
-						"If there is no [aims] line, ask ONE months-scale question — do not invent an aim. " +
-						"If the human does not need a message after the work, reply with exactly [silent]."
-				} else if cronSkippedLive {
-					nudge = "[system] This scheduled job needs live data, but you wrote the user-facing result without calling any tools. " +
-						"Emit the real tool calls now in one response using exact names from the tools list. " +
-						"Do not invent metrics, events, or search results. After tools return, then write the report. " +
-						"If a tool fails, report the failure."
 				}
 				// The nudge rides as a user turn, not a system one. On Gemini
 				// every system block folds into the leading instruction, which
@@ -1180,7 +830,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				// prose — a shape Gemini's compat layer rejects with a bare 400,
 				// and the human hears nothing. User-role keeps the alternation
 				// valid on every provider; the [system] prefix tells the model
-				// who is talking, and lastUserContent skips it.
+				// who is talking.
 				messages = append(messages, provider.Message{
 					Role:    provider.RoleUser,
 					Content: nudge,
@@ -1195,47 +845,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				)
 				giveUp := "I couldn't finish that — tools failed and I stalled instead of retrying or giving up clearly. Please try again."
 				outcomeHint = "stall"
-				var steered bool
-				messages, giveUp, steered, err = a.finishText(ctx, sessionID, messages, giveUp)
-				if err != nil {
-					return "", err
-				}
-				if steered {
-					continue
-				}
 				return giveUp, nil
-			}
-			if cronSkippedLive && nudged {
-				// Second draft after nudge is still a no-tool report — do not
-				// ship invented metrics (Flash will happily rewrite the table).
-				// The daily planner stays silent so a no-tool draft is not pushed.
-				a.log.Warn("cron live-data job skipped tools after nudge; refusing invented report",
-					"chars", len(res.Content),
-					"iteration", iter+1,
-					"planner", plannerTurn,
-				)
-				var steered bool
-				reply := cronSkippedLiveReply
-				if plannerTurn {
-					reply = cron.SilentToken
-				}
-				outcomeHint = "refuse"
-				messages, reply, steered, err = a.finishText(ctx, sessionID, messages, reply)
-				if err != nil {
-					return "", err
-				}
-				if steered {
-					continue
-				}
-				return reply, nil
-			}
-			var steered bool
-			messages, res.Content, steered, err = a.finishText(ctx, sessionID, messages, res.Content)
-			if err != nil {
-				return "", err
-			}
-			if steered {
-				continue
 			}
 			return res.Content, nil
 		}
@@ -1279,7 +889,6 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		}
 		for _, r := range round.results {
 			sawTools = true
-			called = append(called, r.name)
 			messages = append(messages, provider.Message{
 				Role:       provider.RoleTool,
 				Content:    r.out,
@@ -1581,153 +1190,6 @@ func clipChars(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
-}
-
-const cronSkippedLiveReply = "Scheduled job needs live data, but no tools were called — I won't invent metrics. Ask me in chat if you want a live pull."
-
-func withCronToolFooter(reply string, called []string) string {
-	label := "(none)"
-	if len(called) > 0 {
-		label = strings.Join(called, ", ")
-	}
-	return strings.TrimRight(reply, "\n") + "\n\n— tools: " + label
-}
-
-const toolsFooterPrefix = "— tools:"
-
-func isToolsFooterLine(s string) bool {
-	return strings.HasPrefix(strings.TrimSpace(s), toolsFooterPrefix)
-}
-
-// isToolsFooterOnly reports a reply that is only the cron audit footer
-// (with optional blank lines). That is not user-facing speech.
-func isToolsFooterOnly(s string) bool {
-	t := strings.TrimSpace(s)
-	if t == "" || !strings.Contains(t, toolsFooterPrefix) {
-		return false
-	}
-	return strings.TrimSpace(stripToolsFooter(t)) == ""
-}
-
-// stripToolsFooter drops a trailing "— tools: …" audit line. Cron Handle
-// still returns the footer to the mouth; session history and Completer
-// prompts must not keep it or Flash few-shots it as the next reply.
-func stripToolsFooter(s string) string {
-	s = strings.TrimRight(s, "\n")
-	if s == "" {
-		return ""
-	}
-	lines := strings.Split(s, "\n")
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-		end--
-	}
-	if end > 0 && isToolsFooterLine(lines[end-1]) {
-		end--
-		for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-			end--
-		}
-		return strings.TrimRight(strings.Join(lines[:end], "\n"), "\n")
-	}
-	return s
-}
-
-func storedAssistantReply(reply string) string {
-	if stripped := stripToolsFooter(reply); strings.TrimSpace(stripped) != "" {
-		return stripped
-	}
-	return reply
-}
-
-func discardReply(ctx context.Context, w channel.ReplyWriter) {
-	if w == nil {
-		return
-	}
-	d, ok := w.(channel.Discarder)
-	if !ok {
-		return
-	}
-	_ = d.Discard(ctx)
-}
-
-// dropCronHistory removes prior scheduled and watch user/assistant pairs so
-// yesterday's digest cannot few-shot the next one. Interactive turns are kept.
-func dropCronHistory(history []session.Message) []session.Message {
-	if len(history) == 0 {
-		return history
-	}
-	out := make([]session.Message, 0, len(history))
-	skipAssistant := false
-	for _, h := range history {
-		if skipAssistant && h.Role == session.RoleAssistant {
-			skipAssistant = false
-			continue
-		}
-		skipAssistant = false
-		if h.Role == session.RoleUser {
-			c := strings.TrimSpace(h.Content)
-			if strings.HasPrefix(c, "[cron]") || strings.HasPrefix(c, "[watch]") {
-				skipAssistant = true
-				continue
-			}
-		}
-		out = append(out, h)
-	}
-	return out
-}
-
-// harnessNudgePrefix opens every in-turn nudge the kernel injects as a user
-// turn. lastUserContent skips them so the planner / cron heuristics keep
-// reading the human's (or the runner's) line, not the kernel's.
-const harnessNudgePrefix = "[system] "
-
-// lastUserContent is the most recent user turn that is not a harness nudge.
-func lastUserContent(messages []provider.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == provider.RoleUser && !strings.HasPrefix(messages[i].Content, harnessNudgePrefix) {
-			return messages[i].Content
-		}
-	}
-	return ""
-}
-
-// cronJobBody returns the scheduled prompt without the runner wrapper. The
-// wrapper itself mentions tools/metrics and must not trip live-data detection
-// on a plain reminder.
-func cronJobBody(userText string) string {
-	t := strings.TrimSpace(userText)
-	if !strings.HasPrefix(t, "[cron]") {
-		return t
-	}
-	if i := strings.Index(t, "\n\n"); i >= 0 {
-		return strings.TrimSpace(t[i+2:])
-	}
-	return t
-}
-
-// cronJobImpliesLiveTools reports whether a scheduled prompt is asking for
-// fetched data (fitness, calendar, mail, search, sheets) rather than a
-// no-tool reminder. Conservative cues — "submit my timecard" must not match.
-func cronJobImpliesLiveTools(userText string) bool {
-	text := strings.ToLower(cronJobBody(userText))
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	cues := []string{
-		"fetch", "search", "pull ", "query",
-		"garmin", "strava", "ghealth",
-		"calendar", "gmail", "inbox",
-		"sheets", "ledger",
-		"sleep", "hrv", "readiness", "body battery",
-		"web_search", "google_search",
-		"audit", "brief", "summarize",
-	}
-	for _, cue := range cues {
-		if strings.Contains(text, cue) {
-			return true
-		}
-	}
-	return false
 }
 
 // promisesToolCall reports whether text talks about invoking a tool without

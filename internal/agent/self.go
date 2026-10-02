@@ -27,25 +27,22 @@ const selfDistillMinMessages = 6
 // hang behind a dead provider — /new is often how users escape one.
 const selfDistillTimeout = 2 * time.Minute
 
-// Transcript bounds for the distill prompt: enough to catch running jokes,
+// Transcript bounds for the distill prompt: enough to catch a correction,
 // small enough that a local model prefills it quickly.
 const (
 	selfDistillMaxMessages = 60
 	selfDistillPerMessage  = 400
 )
 
-const selfDistillPrompt = "[system] This chat session is about to be reset and its history erased. " +
-	"Below are your current self-notes (SELF.md), the dying conversation, and (if present) a " +
-	"[session voice] block — the rolling mood of this chat (jokes, nicknames, games). " +
-	"Merge into a complete self-notes file so the personality you developed here survives. " +
-	"Keep every existing SELF.md bullet that is a joke, nickname, game, ritual, or north-star aim unless it is a true duplicate. " +
-	"Add from [session voice] using exact wording. Do not replace a quoted joke with a mood word. " +
-	"A north-star aim is a months-scale sentence; keep those. Do not copy progress logs, one-off to-dos, or Facts: about the human. " +
-	"Prefer exact wording from [session voice] over paraphrasing the transcript. " +
-	"Skip one-off mood weather (\"dry today\"). Do not copy facts about the human into SELF.md. " +
-	"Rules: output only the file content; start with the heading \"# SELF.md — Who You Are Becoming\"; " +
-	"short \"- \" bullet lines, at most 30; notes describe YOUR personality, shared rituals, and a few north-star aims — " +
-	"not facts about the human, not progress logs, not rules, not tool recipes."
+const selfDistillPrompt = "[system] This session is about to be reset and its history erased. " +
+	"Below are your current notes on how this human likes the work done (SELF.md), the dying conversation, and (if present) a " +
+	"[session voice] block — the rolling tone of this session. " +
+	"Merge into a complete SELF.md so what you learned about their taste survives into every repo. " +
+	"Keep every existing bullet unless it is a true duplicate or they reversed it in this session. " +
+	"Add what they asked for or corrected: review style, commit shape, how much to explain, what to never do. Use their words. " +
+	"Do not copy repo facts (commands, file paths, conventions of one repo), progress, or one-off tasks. " +
+	"Rules: output only the file content; start with the heading \"# SELF.md — How This Human Works\"; " +
+	"short \"- \" bullet lines, at most 30."
 
 // distillSelf folds the dying session's personality into SELF.md before a
 // reset. Best-effort: every failure is logged and the reset proceeds — losing
@@ -58,9 +55,6 @@ func (a *Agent) distillSelf(ctx context.Context, sessionID string) bool {
 	}
 	_, voice := a.sessionLedger(ctx, sessionID)
 	if len(history) < selfDistillMinMessages && voice == "" {
-		return false
-	}
-	if voice == "" && !transcriptHasQuotedSpan(history) {
 		return false
 	}
 	current, err := a.selfNotes.Read()
@@ -122,25 +116,8 @@ func distillTranscript(history []session.Message) string {
 	return b.String()
 }
 
-func transcriptHasQuotedSpan(history []session.Message) bool {
-	for _, m := range history {
-		if hasQuotedSpan(m.Content) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasQuotedSpan(s string) bool {
-	i := strings.IndexByte(s, '"')
-	if i < 0 {
-		return false
-	}
-	return strings.IndexByte(s[i+1:], '"') >= 0
-}
-
 // parkSessionFacts writes the dying session's Facts: block into SQLite as one
-// episode so the consolidator can split it into durable rows. PERSONA.md is
+// episode so hydration can still find it after the reset. PERSONA.md is
 // operator-owned and is never written here.
 func (a *Agent) parkSessionFacts(ctx context.Context, sessionID string) bool {
 	if a.memory == nil {

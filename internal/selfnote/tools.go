@@ -17,9 +17,9 @@ func ToolDefs() []provider.ToolDef {
 	return []provider.ToolDef{{
 		Name: ToolNote,
 		Description: "APPEND one short new line to SELF.md (does not overwrite or distill the file). " +
-			"Only for a vibe, joke, ritual, or north-star aim that is NOT already in the SELF.md bullets in your prompt — skip if it is already there or only a paraphrase. " +
-			"A north-star is one sentence for months (how you show up). When they state one, write it here. Progress logs and one-off to-dos are memory_store or cron, not this. " +
-			"/new distill merges (does not flatten jokes). Not for facts about the human — use memory_store for those.",
+			"Only for how this human likes the work done, in every repo (review style, commit shape, a thing to never do), that is NOT already in the SELF.md bullets in your prompt. " +
+			"Only when they said it or corrected you this turn; never infer a taste from the task itself. " +
+			"Repo facts (commands, conventions, goals) are memory_store, not this.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

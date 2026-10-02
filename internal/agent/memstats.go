@@ -14,11 +14,7 @@ func (a *Agent) formatMemStats(ctx context.Context) string {
 	}
 	builtin, ok := a.memory.(*memory.Builtin)
 	if !ok {
-		// MCP (or other) backend — row counts live elsewhere; consolidation is off.
-		var b strings.Builder
-		b.WriteString("memory: mcp backend (no local row counts)\n")
-		b.WriteString("consolidation: off")
-		return b.String()
+		return "memory: mcp backend (no local row counts)"
 	}
 	snap, err := builtin.Stats(ctx)
 	if err != nil {
@@ -36,26 +32,6 @@ func (a *Agent) formatMemStats(ctx context.Context) string {
 	)
 	fmt.Fprintf(&b, "state: active=%d expired=%d superseded=%d\n",
 		snap.Active, snap.Expired, snap.Superseded)
-
-	if a.consolidator == nil {
-		b.WriteString("consolidation: off\n")
-	} else {
-		at, lastErr := a.consolidator.LastStatus()
-		status := "ok"
-		if lastErr != nil {
-			status = lastErr.Error()
-		}
-		lastRun := "never"
-		if !at.IsZero() {
-			when := at
-			if a.loc != nil {
-				when = when.In(a.loc)
-			}
-			lastRun = when.Format("15:04:05")
-		}
-		fmt.Fprintf(&b, "consolidation: backlog=%d episodes  quarantined=%d  last_run=%s %s\n",
-			snap.Backlog, snap.Quarantined, lastRun, status)
-	}
 	fmt.Fprintf(&b, "db: %s (WAL)", formatBytes(snap.DBBytes))
 	return b.String()
 }

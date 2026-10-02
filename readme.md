@@ -4,195 +4,131 @@
   <img src="assets/banner.svg" alt="george — a CLI coding agent. It reads your files and edits your code." width="100%">
 </p>
 
-<!-- Hub uses docs/dockerhub.md + assets/banner.png (SVG/mermaid break on Docker Hub). -->
-
 <p align="center">
   <a href="https://github.com/shotah/george/actions/workflows/ci.yml"><img src="https://github.com/shotah/george/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/shotah/george/actions/workflows/docker.yml"><img src="https://github.com/shotah/george/actions/workflows/docker.yml/badge.svg" alt="Docker"></a>
   <a href="https://github.com/shotah/george/actions/workflows/ci.yml"><img src="https://github.com/shotah/george/raw/gh-pages/badges/coverage.svg" alt="Coverage"></a>
-  <a href="https://hub.docker.com/r/shotah/george"><img src="https://img.shields.io/docker/v/shotah/george?logo=docker&label=docker%20hub" alt="Docker Hub"></a>
-  <a href="https://hub.docker.com/r/shotah/george"><img src="https://img.shields.io/docker/pulls/shotah/george?logo=docker" alt="Docker pulls"></a>
 </p>
 
-> **george** — the coding assistant. One process, one local model, MCP
-> tools, stdin/stdout. You call him by name.
+> **george** — a coding agent for your terminal. One process, one local
+> model, four MCP servers, stdin/stdout.
 
-**The product is the assistant.** A Distroless Go process you run. One
-persona. One OpenAI-compatible model on the local socket. With no
-`CHANNEL` set he talks on stdin/stdout. Memory you can `sqlite3`.
-`/new` distills; it does not lobotomize.
+You run it in a repo and type. It reads files, patches them, runs the
+check, and shows you `git status`. It talks to any OpenAI-compatible
+endpoint, and the eval grades it against a pinned local model
+(`qwen3-coder:30b-a3b-q4_K_M` on Ollama).
 
 ```text
-static binary + persona + any OpenAI-compat LLM  →  outbound chat
+static binary + persona + OpenAI-compat LLM + fs / git / shell / github MCP  →  edits in your repo
 ```
 
-Nothing listens. There is no dashboard in the thing you talk to. Health
-is an exit code, not a port. Chat, memory, cron, and web search work
-with **zero extra tools** — MCP is a grant you add later.
+There is no shell sandbox and no approval prompt. The agent edits and runs
+freely inside `--root`, and git is the undo. Untracked files and anything
+outside the root have no history, so the persona is the only guard there.
 
 The engineering budget went into the **loop**: parallel tool batches,
-repairs so a small local model can finish a turn, context that does not
-rot, personality that survives a reset. Console, metrics, and fleet
-live one layer up in **[gantree](https://github.com/shotah/gantree)** —
-the shipping yard — and never sit in a chat turn. The mouth we run is
-**[gantry-pendant](https://github.com/shotah/gantry-pendant)** (phone
-PWA) and **[gantry-cab](https://github.com/shotah/gantry-cab)**, a
-native Android app on that same backend. Android Auto is one surface
-of Cab, not the whole app. Goals, todos, settings, and voice live
-there. Telegram stays an option.
+name repairs so a small local model can finish a turn, tool results that
+collapse instead of rotting the context, and memory that survives `/new`.
 
-If you need a team workspace on day one, this is the wrong repo — and
-that's fine.
-
----
-
-## The family
-
-Four public repos. This one is the product. The others exist so you can
-operate it and talk to it without anyone sitting in a token path.
-
-<p align="center">
-  <img src="assets/ecosystem.svg" alt="How the four repos talk: pendant and cab dial the mailbox; the crane dials the mailbox and Telegram; gantree writes files and never sits in the turn." width="100%">
-</p>
-
-| Repo | Job | How it talks |
-| --- | --- | --- |
-| **This repo** | The crane. One process, one person, one model. | Dials out. Reads env + files. Never learns the yard exists. |
-| **[gantree](https://github.com/shotah/gantree)** | Shipping yard. Board, grants, doctor, spend. | Writes `.env`, `mcp.toml`, persona, Docker. Pulls logs. Never in a chat turn. |
-| **[gantry-pendant](https://github.com/shotah/gantry-pendant)** | Handheld + mailbox. Phone PWA + Cloudflare Durable Object. | Phone and crane both **dial in**. Zero inbound ports on the Mini. |
-| **[gantry-cab](https://github.com/shotah/gantry-cab)** | Native Android app. Also Android Auto. | Dials the pendant mailbox. Not a second Worker. |
-
-Telegram, Discord, and Slack are vendor mouths: the crane dials them
-directly. Pendant and cab go through the mailbox we own. MCP binaries
-are optional children on `PATH` — not a fifth product.
-
-The work list after the fork is **[docs/todo.md](docs/todo.md)**.
-
-```mermaid
-flowchart LR
-  subgraph mouths["Mouths we own"]
-    PWA["pendant PWA"]
-    CAB["gantry-cab"]
-  end
-  TG["Telegram / Discord / Slack"]
-  DO["gantry-pendant mailbox"]
-  subgraph crane["george"]
-    K["george"]
-    MCP["optional MCP"]
-  end
-  Y["gantree"]
-  LLM["OpenAI-compat LLM"]
-  PWA -->|"wss in"| DO
-  CAB -->|"wss in"| DO
-  K -->|"outbound wss"| DO
-  K -->|"outbound"| TG
-  Y -.->|"files + docker"| K
-  K --> LLM
-  K --> MCP
-```
+george is a fork of an assistant harness. The assistant parts are gone:
+chat apps, cron, the planner, watches, aims, and todos. What is left and
+what comes next: **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)**.
+The work list is **[docs/todo.md](docs/todo.md)**.
 
 ---
 
 ## Hello
 
-You need an OpenAI-compatible model on this machine (Ollama, llama.cpp, or
-an API you already have). With no `CHANNEL` set, george talks on stdin/stdout.
+You need an OpenAI-compatible model on this machine (Ollama, llama.cpp,
+or an API you already have) and Go to build.
 
 ```bash
+ollama pull qwen3-coder:30b-a3b-q4_K_M
 git clone https://github.com/shotah/george.git && cd george
-make init
-cp .env.example .env
-# set in .env:
-#   LLM_BASE_URL=http://127.0.0.1:11434/v1
-#   LLM_API_KEY=ollama
-#   LLM_MODEL=...
+make init                      # deploy/persona + deploy/mcp.toml from examples/
+go run ./cmd/george tools-fetch   # fs-mcp, git-mcp, shell-mcp, github-mcp
+```
+
+Point `--root` in `deploy/mcp.toml` at the repo you want it to work in,
+then:
+
+```bash
+export LLM_BASE_URL=http://127.0.0.1:11434/v1 LLM_API_KEY=ollama \
+       LLM_MODEL=qwen3-coder:30b-a3b-q4_K_M LLM_REASONING_EFFORT=none
+export DATA_DIR=./deploy/data MCP_MANIFEST=./deploy/mcp.toml
 make run
 ```
 
-Send `/status`. The files `george init` copies are in
-**[examples/](examples/)**.
+Send `/status`, then a task: `greet.txt says hi. Change it to hello, then
+run wc -l greet.txt.`
+
+The paths are still container-shaped while the off-Docker step lands.
+After it, config lives in `~/.config/george/`, data in
+`~/.local/share/george/`, and the root is the git toplevel of the
+directory you start in. See
+[Where it lives](docs/coding-agent-plan.md#where-it-lives-no-docker).
 
 ### Drop in a different model
 
-The agent does not care which endpoint you picked. Set these three and restart:
+The agent does not care which endpoint you picked. Set these three:
 
 | You have | Set |
 | --- | --- |
 | Ollama on this machine | `LLM_BASE_URL=http://127.0.0.1:11434/v1`, `LLM_API_KEY=ollama`, `LLM_MODEL=<id>` |
 | Another OpenAI-compatible API | `LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` |
 
-```bash
-# .env — a cloud endpoint, for instance
-LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-LLM_API_KEY=...
-LLM_MODEL=gemini-3.5-flash
-```
-
-### Beside this process
-
-| Path | When |
-| --- | --- |
-| **[gantree](https://github.com/shotah/gantree)** | Console, metrics, grant tools, several agents |
-| **[gantry-pendant](https://github.com/shotah/gantry-pendant)** | Phone chat we own (`CHANNEL=pendant`) |
-| **[gantry-cab](https://github.com/shotah/gantry-cab)** | Native Android app on the pendant mailbox. Android Auto is one surface. |
-
-Scaffolds: **[examples/README.md](examples/README.md)**.
+The eval numbers only hold for the model they were run against.
 
 ---
 
-## Chat is the console
+## Tools
 
-Ops live in the same chat you already opened. No second UI in *this*
-binary, no inbound port. Type `/help` anytime. Graphs, a board of
-agents, MCP grants without SSH — that is
-**[gantree](https://github.com/shotah/gantree)**. It never sits in a
-chat turn.
+| Server | Tools | Job |
+| --- | --- | --- |
+| `fs` | `file_get`, `file_list`, `file_search`, `file_patch`, `file_create` | Read and edit inside `--root` |
+| `git` | `status_get`, `diff_get`, `commits_list`, `stage_update`, `commit_create` | Look at and record changes. No push |
+| `shell` | `command_run` | Build, test, lint |
+| `github` | issues, pulls, checks, contents | Optional. Reads `GITHUB_TOKEN` or `GH_TOKEN` |
+
+Built in, with no MCP server: `memory_store` / `memory_recall` /
+`memory_forget`, `self_note`, `mcp_enable`, and `web_search` (Brave).
+Wiring and naming: [docs/coding-mcp.md](docs/coding-mcp.md),
+[docs/mcp.md](docs/mcp.md).
+
+## Slash commands
 
 | Command | What it does |
 | --- | --- |
-| `/status` `/perf` `/tokens` | Session bounds, trajectory (invocations / tools / batch), prompt size |
-| `/tools` `/examples` `/planner` `/aims` `/new` `/cancel` | Catalog, ideas, daily planning session, aim ledger, reset, abort |
-| `/auth` | Headless MCP login — paste a code; no laptop callback |
+| `/new` | Reset the session. Taste goes into `SELF.md`, facts park in memory |
+| `/cancel` | Stop the turn in flight |
+| `/status` `/perf` `/tokens` | Uptime and model, last turns' rounds and batches, prompt size |
+| `/tools` `/toolstats` `/memstats` | Tool catalog, per-tool calls since boot, memory row counts |
+| `/brief` `/short` `/off` | Hold an MCP prefix on for ~6h or ~27h, or drop the hold |
+| `/help` `/quit` | This list, exit |
 
-**[Pendant](https://github.com/shotah/gantry-pendant)** is the mouth
-(`CHANNEL=pendant`): goals, todos, settings, and voice on a phone we
-own. Cab is the native Android app on that same backend, Android
-Auto included. Telegram, Discord,
-and Slack stay vendor options (one `CHANNEL` per process). Headless
-OAuth: **[docs/auth.md](docs/auth.md)**.
+## What it remembers
 
-### Two files, not a catalog
+| Where | What | Who writes it |
+| --- | --- | --- |
+| `PERSONA.md` | How the agent works: the edit chain, when to batch, never claim a green it did not see, commit only when asked | You |
+| `SELF.md` | How you like the work done, in every repo: review style, commit shape, what to never do | The agent, when you say it or correct it |
+| memory (SQLite) | Repo facts: how to test and build, conventions, goals | The agent, via `memory_store` |
 
-Long-horizon means the person is still there tomorrow. Most agents *feel*
-like someone after a long chat, then `/new` wipes them.
+Same kind and subject replaces the live row, so a corrected fact
+supersedes the old one. Memory scoped per repo is planned
+([Memory](docs/coding-agent-plan.md)); today rows are shared.
 
-| File | Who writes it |
-| --- | --- |
-| `PERSONA.md` | You — who it should be, who you are (name, timezone, languages), what you are aiming at |
-| `SELF.md` | The agent — voice, jokes, rituals, a few north-star aims that survive `/new` (you can delete any line) |
-
-MCP tools are **not** listed in `PERSONA.md`. They come from the live catalog
-(`/tools`, this turn's schemas, `[mcp prefixes]`). Keep `PERSONA.md` short
-(examples over rule dumps) or the middle of it gets ignored. Progress logs
-and dated to-dos are memory / cron, not persona.
-
-The shipped seed is built around **goals**: you name the aim, the agent
-nudges toward it where today's tools disagree with it, does the legwork
-(the flight, the event, the reminder) the same turn, and treats an empty
-day as a hole to fill — not "nothing today."
-
-Keep `PERSONA.md` short. Audit or delete a line in `SELF.md` when the voice drifts.
-
-### Tested two ways
+## Tested two ways
 
 | Contract | What it pins | Runs |
 | --- | --- | --- |
-| **Goldens** | The bytes the model sees — pendant JSON → `Handle` → Completer request → HTTP body, every `[harness]` stamp, on the OpenAI *and* Gemini layouts | `go test ./...`, every push, free |
-| **Behavior eval** | What the model *did* with the shipped seed on a live model — tools called and their args, `[wait]` armed, `[silent]` or not, the memory row, the cron job. Never the sentence | `make integration-test`, release gate, paid |
+| **Golden** | The bytes the model sees: one stdin line → `Handle` → Completer request → HTTP body | `go test ./...`, free |
+| **Behavior eval** | What the model did with the shipped persona: which tools, their args, which calls shared a batch, the order, and the reply. Never the exact sentence | `make integration-test`, against the live model |
 
-Seven scenarios from the goals doc, N runs each, every run must pass; a
-rule that holds two times in three is a rule the persona is not carrying.
-Setup: **[docs/eval_setup.md](docs/eval_setup.md)**.
+The eval fetches the real MCP releases and grades against their live
+tool catalog, so a renamed tool fails before any model call. Each fixture
+runs N times and every run must pass. Fixtures cover the serial edit
+chain and parallel reads, checks, and patches. Setup:
+**[docs/eval_setup.md](docs/eval_setup.md)**.
 
 ---
 
@@ -200,21 +136,12 @@ Setup: **[docs/eval_setup.md](docs/eval_setup.md)**.
 
 | If you want… | Go here |
 | --- | --- |
-| Work after the fork | **[docs/todo.md](docs/todo.md)** |
-| Why this tree, not goose | **[docs/fork-cli-agent.md](docs/fork-cli-agent.md)** |
-| Run the live behavior eval (`make integration-test`) | **[docs/eval_setup.md](docs/eval_setup.md)** |
+| What changes from the assistant, and in what order | **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)** |
+| The work list | **[docs/todo.md](docs/todo.md)** |
 | How the harness is put together | **[docs/architecture.md](docs/architecture.md)** |
-| Env, loop, memory, security | **[docs/design.md](docs/design.md)** |
-| Wiring MCP tools | **[docs/mcp.md](docs/mcp.md)** |
-| Console, metrics, or several agents | **[gantree](https://github.com/shotah/gantree)** |
-| Chat from a phone we own | **[gantry-pendant](https://github.com/shotah/gantry-pendant)** |
-| Chat from the Android app | **[gantry-cab](https://github.com/shotah/gantry-cab)** |
-
-The harness is a small static Go binary. Tools are optional MCP processes.
-We spent the budget on the loop so a **small local model** can finish a
-tool turn instead of ERROR — that's the production story, not a requirement
-to start. Long-horizon planning is the reason the loop, memory, cron, and
-`SELF.md` exist.
+| Run the live behavior eval | **[docs/eval_setup.md](docs/eval_setup.md)** |
+| The coding MCP servers | **[docs/coding-mcp.md](docs/coding-mcp.md)** |
+| Why this tree, not goose | **[docs/fork-cli-agent.md](docs/fork-cli-agent.md)** |
 
 ## License
 

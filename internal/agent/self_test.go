@@ -75,7 +75,7 @@ func TestAgent_NewDistillsSelfNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "personality distilled") {
+	if !strings.Contains(reply, "taste distilled") {
 		t.Fatalf("reply = %q", reply)
 	}
 	if len(reqs) != 1 {
@@ -85,7 +85,7 @@ func TestAgent_NewDistillsSelfNotes(t *testing.T) {
 	for _, m := range reqs[0].Messages {
 		joined.WriteString(m.Content + "\n")
 	}
-	for _, want := range []string{"[current SELF.md]", "- dry humor", "[transcript]", "guess my number", "[session voice]", "gull", "Merge", "mood word"} {
+	for _, want := range []string{"[current SELF.md]", "- dry humor", "[transcript]", "guess my number", "[session voice]", "gull", "Merge", "How This Human Works"} {
 		if !strings.Contains(joined.String(), want) {
 			t.Fatalf("distill prompt missing %q in %q", want, joined.String())
 		}
@@ -214,37 +214,11 @@ func TestAgent_NewDistillsFromVoiceWithoutLongHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "personality distilled") {
+	if !strings.Contains(reply, "taste distilled") {
 		t.Fatalf("reply = %q", reply)
 	}
 	if len(notes.wrote) != 1 {
 		t.Fatalf("wrote = %q", notes.wrote)
-	}
-}
-
-func TestAgent_NewBlandSessionSkipsDistill(t *testing.T) {
-	fc := &fakeCompleter{}
-	notes := &fakeSelfNotes{content: "# SELF.md — Who You Are Becoming\n- dry humor"}
-	hist := newMemHistory()
-	seedHistory(t, hist, "s", 4) // 8 messages, no Voice, no quoted spans
-	a, err := agent.New(agent.Options{
-		Completer: fc,
-		Sessions:  hist,
-		SelfNotes: notes,
-		Model:     "m",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "/new"})
-	if err != nil || reply != "session reset" {
-		t.Fatalf("reply = %q, err = %v", reply, err)
-	}
-	if fc.calls != 0 {
-		t.Fatalf("model calls = %d, want 0", fc.calls)
-	}
-	if len(notes.wrote) != 0 {
-		t.Fatalf("wrote = %q, want none", notes.wrote)
 	}
 }
 
@@ -269,7 +243,7 @@ func TestAgent_NewRestoresDroppedQuotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "personality distilled") {
+	if !strings.Contains(reply, "taste distilled") {
 		t.Fatalf("reply = %q", reply)
 	}
 	if len(notes.wrote) != 1 {
@@ -308,7 +282,7 @@ func TestAgent_NewDistillsFromTranscriptQuotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "personality distilled") {
+	if !strings.Contains(reply, "taste distilled") {
 		t.Fatalf("reply = %q", reply)
 	}
 	if len(notes.wrote) != 1 {

@@ -6,9 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/shotah/george/internal/channel"
 	"github.com/shotah/george/internal/session"
 )
 
@@ -61,48 +59,6 @@ func TestStore_AppendTrimReset(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "george.db")); err != nil {
 		t.Fatalf("db file missing: %v", err)
-	}
-}
-
-func TestStore_LastUserAt_SkipsCronRows(t *testing.T) {
-	store, err := session.Open(t.TempDir(), 20, 100000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	ctx := context.Background()
-	id := "contact"
-
-	if _, ok, err := store.LastUserAt(ctx, id); err != nil || ok {
-		t.Fatalf("fresh session ok=%v err=%v", ok, err)
-	}
-	before := time.Now().Add(-time.Second)
-	if err := store.Append(ctx, id,
-		session.Message{Role: session.RoleUser, Content: "hi"},
-		session.Message{Role: session.RoleAssistant, Content: "hello"},
-	); err != nil {
-		t.Fatal(err)
-	}
-	at, ok, err := store.LastUserAt(ctx, id)
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	if at.Before(before) || at.After(time.Now().Add(time.Second)) {
-		t.Fatalf("at=%v not around now", at)
-	}
-	if err := store.Append(ctx, id,
-		session.Message{Role: session.RoleUser, Content: "[cron] Daily planner — one planning session"},
-		session.Message{Role: session.RoleAssistant, Content: "[silent]"},
-	); err != nil {
-		t.Fatal(err)
-	}
-	again, ok, err := store.LastUserAt(ctx, id)
-	if err != nil || !ok || !again.Equal(at) {
-		t.Fatalf("cron row moved last contact: %v → %v (ok=%v err=%v)", at, again, ok, err)
-	}
-	active, err := store.UserActiveSince(ctx, id, before)
-	if err != nil || !active {
-		t.Fatalf("UserActiveSince active=%v err=%v", active, err)
 	}
 }
 
@@ -161,18 +117,20 @@ func TestStore_TokenTrim(t *testing.T) {
 	}
 }
 
-func TestCollapse_MergesMouthHistory(t *testing.T) {
+func TestReopen_KeepsSessionsApart(t *testing.T) {
 	dir := t.TempDir()
 	store, err := session.Open(dir, 20, 100000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := store.Append(ctx, "telegram:1:2",
-		session.Message{Role: session.RoleUser, Content: "hi"},
-		session.Message{Role: session.RoleAssistant, Content: "hey"},
-	); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"repo-a", "repo-b"} {
+		if err := store.Append(ctx, id,
+			session.Message{Role: session.RoleUser, Content: "hi " + id},
+			session.Message{Role: session.RoleAssistant, Content: "hey"},
+		); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -183,18 +141,13 @@ func TestCollapse_MergesMouthHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	old, err := store.Messages(ctx, "telegram:1:2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(old) != 0 {
-		t.Fatalf("mouth session should be gone, got %d", len(old))
-	}
-	msgs, err := store.Messages(ctx, channel.AgentSession)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 2 || msgs[0].Content != "hi" || msgs[1].Content != "hey" {
-		t.Fatalf("collapsed msgs=%+v", msgs)
+	for _, id := range []string{"repo-a", "repo-b"} {
+		msgs, err := store.Messages(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 2 || msgs[0].Content != "hi "+id {
+			t.Fatalf("%s msgs=%+v", id, msgs)
+		}
 	}
 }
