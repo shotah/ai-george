@@ -40,7 +40,7 @@ func TestAgent_FatToolResultsStayBounded(t *testing.T) {
 		}
 		if n <= 6 {
 			return &provider.Result{ToolCalls: []provider.ToolCall{
-				{ID: fmt.Sprintf("c%d", n), Name: "dump__fat", Arguments: `{}`},
+				{ID: fmt.Sprintf("c%d", n), Name: "dump__fat", Arguments: fmt.Sprintf(`{"n":%d}`, n)},
 			}}, nil
 		}
 		return &provider.Result{Content: "done"}, nil

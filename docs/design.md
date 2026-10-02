@@ -83,12 +83,11 @@ every round.
 MCP tools share one `{server}__{tool}` name and one repair path. Details:
 [mcp.md](mcp.md). The four coding servers: [coding-mcp.md](coding-mcp.md).
 
-`provider` still echoes Gemini `thought_signature` on tool rounds when the
-model name contains `gemini`. The graded socket is the local one.
-`LLM_SYSTEM_FOLD=auto` folds system text into one leading message only for
-`gemini*`. A local template that renders system text only at position 0
-needs `LLM_SYSTEM_FOLD=one`. That check against this model's template is
-still open ([todo.md](todo.md) gap 5).
+The graded socket is the local one; Gemini support was dropped.
+`LLM_SYSTEM_FOLD=auto` (the default) folds every system block into one leading
+system message. Ollama's `qwen3-coder` renderer keeps only the first system
+message and silently drops the rest, so the layout with system text after the
+user turn (`many`) hides the harness, budget, and loop notes from this model.
 
 ## Progress per invocation
 
@@ -131,7 +130,7 @@ directory.
 | `LLM_MODEL` | yes | `qwen3-coder:30b-a3b-q4_K_M` |
 | `LLM_MAX_TOKENS` | no | `4096` (completion output cap, including tool-call args; `0` = provider default) |
 | `LLM_REASONING_EFFORT` | no | empty (Ollama/Qwen: `none` so max tokens are not eaten by hidden chain-of-thought) |
-| `LLM_SYSTEM_FOLD` | no | `auto` (`gemini*` → one leading system message; otherwise the agent layout, with `[harness]` after the user). `one` for a template that renders system only at position 0 |
+| `LLM_SYSTEM_FOLD` | no | `auto` (same as `one`: every system block folded into one leading message). `many` posts the layout with `[harness]` after the user, for a server that renders every system message |
 | `GEORGE_CONFIG_DIR` | no | `~/.config/george` |
 | `GEORGE_ROOT` | no | git toplevel of the cwd |
 | `PERSONA_DIR` | no | `GEORGE_CONFIG_DIR` |
@@ -235,7 +234,7 @@ record.
 | Mechanism | Behavior |
 | --- | --- |
 | History caps | Drop oldest past `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_TOKENS` (chars/4 estimate). Filler strip is prompt-only, on user lines older than the last 40. SQLite stays verbatim. |
-| Rolling summary | Trimmed turns fold into `session.summary` (`Facts:` + `Voice:`) via one completion on the same model. That completion is still in the loop; dropping it is open ([todo.md](todo.md) gap 9). |
+| Rolling summary | Trimmed turns fold into `session.summary` (`Facts:` + `Voice:`) via one completion on the same model. That completion is still in the loop; dropping it is open ([todo.md](todo.md#8-work-list), *The summarizer decision*). |
 | Tool truncate | Each tool result capped at `TOOL_RESULT_MAX_CHARS` |
 | Tool collapse | Payloads older than the last 2 tool rounds become one-line markers; matching tool-call args are stubbed to `{}`. A round is one model-emitted batch. Session history stores the reply text, not tool payloads. |
 | Iteration cap | `TOOL_MAX_ITERATIONS` rounds with tools, then one landing call |
@@ -385,7 +384,7 @@ Dev: `make build|test|lint|run|ci|check`.
 9. **No listen port and no heartbeat.** Nothing is left running to health-check.
 10. **No sandbox.** `shell__command_run` runs as you, in `--root`. Git is the undo.
 11. **Fail-soft MCP boot.** One missing binary does not exit the process. A bad manifest does.
-12. **The session fold is one completion.** It is still in the code. Whether it stays is gap 9 in [todo.md](todo.md).
+12. **The session fold is one completion.** It is still in the code. Whether it stays is *The summarizer decision* in [todo.md](todo.md#8-work-list).
 
 **Rejected:** pairing codes; embeddings on the hot path; a tool-shim model; stuffing the MCP catalog into `PERSONA.md`; cron, watches, and a planner; a container as the security boundary.
 

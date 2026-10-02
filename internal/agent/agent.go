@@ -586,6 +586,9 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	// empty after a mixed narration+tool call (or after a theater nudge); keep
 	// that text instead of erroring the turn.
 	var lastNarration string
+	// One signature per tool round; a repeated cycle forces the landing call.
+	var roundSigs []string
+	looped := false
 	// The loop grants maxToolIters tool rounds plus one landing call: tools are
 	// withheld on that last call so the model must answer with text — the turn
 	// ends with a real reply (and persisted history) instead of an error that
@@ -594,7 +597,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		final := iter == a.maxToolIters
+		final := iter == a.maxToolIters || looped
 		iters = iter + 1
 		if final {
 			usedLanding = true
@@ -606,9 +609,13 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		bounded := collapseOldToolResults(messages)
 		if final {
 			forceNames = nil
+			note := fmt.Sprintf(budgetExhaustedNote, a.maxToolIters)
+			if looped {
+				note = loopNote
+			}
 			bounded = append(bounded, provider.Message{
 				Role:    provider.RoleSystem,
-				Content: fmt.Sprintf(budgetExhaustedNote, a.maxToolIters),
+				Content: note,
 			})
 		}
 		req := provider.Request{Messages: bounded, Tools: toolDefs, ForceToolNames: forceNames}
@@ -747,17 +754,27 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				recoveries++
 			}
 		}
+		if len(res.ToolCalls) == 0 {
+			res.Content = stripDanglingToolTags(res.Content)
+		}
 		if c := strings.TrimSpace(res.Content); c != "" {
 			lastNarration = c
 		}
 		if len(res.ToolCalls) == 0 {
+			if res.Content == "" && res.Thinking == "" && sawTools {
+				if prior := strings.TrimSpace(lastNarration); prior != "" {
+					return prior, nil
+				}
+				a.log.Warn("model ended a tool turn with no reply", "iteration", iter+1)
+				return "Done.", nil
+			}
 			if res.Content == "" {
 				if think := strings.TrimSpace(res.Thinking); think != "" {
 					// CoT-only turns are common with Qwen think: the usable
 					// answer lands in Thinking with empty Content. After tools
 					// ran, promote CoT to the user reply — a nudge rarely
 					// helps and burns another long think. Before tools, nudge
-					// once; if still stuck, ERROR so Telegram reports it.
+					// once; if still stuck, ERROR so the human sees it.
 					a.log.Warn("model returned thinking with empty answer",
 						"thinking_chars", len(res.Thinking),
 						"finish_reason", res.FinishReason,
@@ -826,8 +843,8 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						"OR give a final answer that reports the tool error and stops. Giving up is fine. " +
 						"Do not ask for a moment or promise another attempt without calling a tool."
 				}
-				// The nudge rides as a user turn, not a system one. Under
-				// LLM_SYSTEM_FOLD=one every system block folds into the leading
+				// The nudge rides as a user turn, not a system one. Under the
+				// default LLM_SYSTEM_FOLD every system block folds into the leading
 				// instruction, which would leave the conversation ending on the
 				// assistant's own prose. User-role keeps the alternation valid
 				// on every chat template; the [system] prefix tells the model
@@ -887,6 +904,11 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		}
 		if hint := round.forceNames; len(hint) > 0 {
 			forceNames = hint
+		}
+		roundSigs = append(roundSigs, roundSig(res.ToolCalls, round.results))
+		if repeatsCycle(roundSigs) {
+			looped = true
+			a.log.Warn("tool rounds repeating; landing early", "iteration", iters)
 		}
 		for _, r := range round.results {
 			sawTools = true
@@ -1063,7 +1085,7 @@ func (a *Agent) startSpinupNotice(ctx context.Context, status channel.StatusWrit
 		posted = true
 		mu.Unlock()
 		// UpdateStatus only caches text; the channel flushes it out of band, so
-		// this never puts Telegram latency in front of the model call.
+		// this never puts output latency in front of the model call.
 		if err := status.UpdateStatus(ctx, note); err != nil {
 			a.log.Debug("spinup notice skipped", "err", err)
 		}

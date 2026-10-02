@@ -10,9 +10,8 @@ import (
 )
 
 const toolDescription = "Web search. Exact name: web_search. " +
-	"Do not invent google_search, duckduckgo, or MCP-prefixed names — leftover google-search__web_search still works. " +
-	"Returns titles, URLs, and snippets. It does not update calendars. " +
-	"If they asked to put a found address on a calendar event, call the calendar tool next."
+	"Do not invent google_search, duckduckgo, or MCP-prefixed names. " +
+	"Returns titles, URLs, and snippets."
 
 // ToolDefs returns the builtin web_search schema.
 func ToolDefs() []provider.ToolDef {

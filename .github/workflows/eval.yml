@@ -3,8 +3,8 @@ name: eval
 # Behavioral eval against a live model (docs/evaluation.md, gap 1). Paid, so
 # not on every push: release.yml calls it as a gate on tag push, and it can be
 # run by hand. Needs the LLM_API_KEY repository secret (plus LLM_BASE_URL and
-# LLM_MODEL as repository variables); without them the test skips and the job
-# is green, so a fork without a key still releases.
+# LLM_MODEL as repository variables); without them the test fails, so a repo
+# with no model cannot release.
 
 on:
   workflow_dispatch:
@@ -45,6 +45,6 @@ jobs:
           EVAL_ONLY: ${{ inputs.only || '' }}
         run: |
           if [ -z "$LLM_API_KEY" ]; then
-            echo "::notice::LLM_API_KEY not set; live eval skipped"
+            echo "::error::LLM_API_KEY not set; the live eval is the release gate"
           fi
           make integration-test EVAL_ARGS="-eval.n=${EVAL_N} -eval.only=${EVAL_ONLY}"

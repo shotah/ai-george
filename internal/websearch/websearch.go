@@ -62,17 +62,10 @@ func Open(opts Options) (Tools, error) {
 	}, nil
 }
 
-// IsReplacedMCP reports leftover google-search MCP grants that the builtin replaces.
-func IsReplacedMCP(name, command string) bool {
-	n := strings.TrimSpace(name)
-	c := strings.TrimSpace(command)
-	return n == "google-search" || c == "mcp-gemini-google-search"
-}
-
-// IsSearchTool reports the builtin name and leftover MCP / invented aliases.
+// IsSearchTool reports the builtin name and the alias models invent for it.
 func IsSearchTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case ToolName, "google_search", "google-search__web_search", "google_search__web_search":
+	case ToolName, "google_search":
 		return true
 	default:
 		return false

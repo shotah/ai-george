@@ -111,9 +111,6 @@ func run() int {
 		ResultMaxChars: cfg.ToolResultMaxChars,
 		BudgetStore:    budgetStore,
 		Location:       tzLoc,
-		SkipServer: func(spec mcp.ServerSpec) bool {
-			return cfg.WebSearchEnabled && websearch.IsReplacedMCP(spec.Name, spec.Command)
-		},
 	})
 	if err != nil {
 		logger.Error("mcp host failed", "err", err)

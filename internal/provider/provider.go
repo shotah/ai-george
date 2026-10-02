@@ -125,7 +125,7 @@ func (c *Client) WithReasoningEffort(effort string) *Client {
 }
 
 // WithSystemFold sets LLM_SYSTEM_FOLD (FoldAuto|FoldOne|FoldMany). Empty is
-// FoldAuto, which keeps the agent layout. Returns c.
+// FoldAuto, which folds. Returns c.
 func (c *Client) WithSystemFold(mode string) *Client {
 	c.systemFold = strings.ToLower(strings.TrimSpace(mode))
 	return c

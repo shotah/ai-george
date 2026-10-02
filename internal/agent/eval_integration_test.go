@@ -59,7 +59,7 @@ const evalTurnTimeout = 10 * time.Minute
 func TestEval_Live(t *testing.T) {
 	baseURL, apiKey, model := os.Getenv("LLM_BASE_URL"), os.Getenv("LLM_API_KEY"), os.Getenv("LLM_MODEL")
 	if apiKey == "" || baseURL == "" || model == "" {
-		t.Skip("LLM_BASE_URL, LLM_API_KEY, LLM_MODEL required; put them in .env and run make integration-test")
+		t.Fatal("LLM_BASE_URL, LLM_API_KEY, LLM_MODEL required; put them in .env and run make integration-test. The live eval is the release gate, so it fails instead of skipping")
 	}
 	effort := os.Getenv("LLM_REASONING_EFFORT")
 	completer := provider.New(baseURL, apiKey, model).WithReasoningEffort(effort)

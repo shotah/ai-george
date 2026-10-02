@@ -2,8 +2,8 @@ package agent
 
 import "math/rand/v2"
 
-// Cold-start lines (first turn after george restarts). Keep short — Telegram
-// status bubble, not a monologue.
+// Cold-start lines (first turn after george restarts). Keep short — a status
+// line, not a monologue.
 var spinupColdNotes = []string{
 	"⏳ spinning up — the first reply after a restart takes longer",
 	"⏳ cold start — waking the weights from their nap",

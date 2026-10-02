@@ -37,8 +37,7 @@ type Options struct {
 	ResultMaxChars    int
 	Dial              DialFunc // optional; defaults to CommandTransport dial
 	RestartMaxBackoff time.Duration
-	// SkipServer omits a manifest entry without counting it as a boot failure
-	// (builtin replacements such as google-search → web_search).
+	// SkipServer omits a manifest entry without counting it as a boot failure.
 	SkipServer func(spec ServerSpec) bool
 	// BudgetStore counts per-server calls for `budget` entries; nil is an
 	// in-memory counter that forgets on restart. run.go passes the SQLite
@@ -327,7 +326,7 @@ func isRestartableMCPError(err error) bool {
 
 // resolve looks up a tool by exact prefixed name, then by a common local-model
 // typo: underscores in the server prefix where the catalog uses hyphens
-// (e.g. google_search__google_search → google-search__web_search).
+// (e.g. my_server__tool_get → my-server__tool_get).
 // Only the prefix is rewritten; tool suffixes keep underscores.
 // Failing that, a real tool name carrying an invented or missing prefix.
 func (h *Host) resolve(toolName string) (*Tool, string, bool) {

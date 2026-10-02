@@ -1494,7 +1494,7 @@ func TestAgent_MaxToolIterations_GracefulLanding(t *testing.T) {
 		reqs = append(reqs, req)
 		if len(req.Tools) > 0 {
 			return &provider.Result{ToolCalls: []provider.ToolCall{
-				{ID: "c", Name: "demo__echo", Arguments: `{}`},
+				{ID: "c", Name: "demo__echo", Arguments: fmt.Sprintf(`{"n":%d}`, len(reqs))},
 			}}, nil
 		}
 		return &provider.Result{Content: "ran out of tool budget; here is what I found"}, nil
@@ -1531,6 +1531,86 @@ func TestAgent_MaxToolIterations_GracefulLanding(t *testing.T) {
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("history = %d messages, want persisted user + assistant", len(msgs))
+	}
+}
+
+// A model that repeats the same round gets the landing call (no tools, a
+// note saying why) on the next call instead of running to the cap.
+func TestAgent_RepeatedRoundLands(t *testing.T) {
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		if len(req.Tools) > 0 {
+			return &provider.Result{ToolCalls: []provider.ToolCall{
+				{ID: "c", Name: "demo__echo", Arguments: `{"path":"a.go"}`},
+			}}, nil
+		}
+		return &provider.Result{Content: "a.go says hi; I kept re-reading it."}, nil
+	}}
+	a, err := agent.New(agent.Options{
+		Completer:    fc,
+		Sessions:     newMemHistory(),
+		Tools:        &fakeTools{defs: []provider.ToolDef{{Name: "demo__echo"}}},
+		MaxToolIters: 25,
+		Model:        "m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "read a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "a.go says hi; I kept re-reading it." {
+		t.Fatalf("reply = %q", reply)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("model calls = %d, want 2 identical rounds + landing", len(reqs))
+	}
+	last := reqs[2].Messages[len(reqs[2].Messages)-1]
+	if reqs[2].Tools != nil || !strings.Contains(last.Content, "repeated") {
+		t.Fatalf("landing call should drop tools and say why: tools=%d last=%q", len(reqs[2].Tools), last.Content)
+	}
+}
+
+// A final completion that is only a stray tool tag (or blank) after tools ran
+// must not ship an empty reply: earlier narration wins, else a short "Done.".
+func TestAgent_EmptyFinalAfterTools(t *testing.T) {
+	for _, tc := range []struct {
+		name, narration, final, want string
+	}{
+		{"keeps narration", "Stored it.", "<tool_call>", "Stored it."},
+		{"blank falls back", "", "  \n", "Done."},
+		{"tag only falls back", "", "</tool_call>", "Done."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			fc := &fakeCompleter{fn: func(provider.Request) (*provider.Result, error) {
+				calls++
+				if calls == 1 {
+					return &provider.Result{Content: tc.narration, ToolCalls: []provider.ToolCall{
+						{ID: "c", Name: "demo__echo", Arguments: `{}`},
+					}}, nil
+				}
+				return &provider.Result{Content: tc.final}, nil
+			}}
+			a, err := agent.New(agent.Options{
+				Completer: fc,
+				Sessions:  newMemHistory(),
+				Tools:     &fakeTools{defs: []provider.ToolDef{{Name: "demo__echo"}}},
+				Model:     "m",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "go"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply != tc.want {
+				t.Fatalf("reply = %q, want %q", reply, tc.want)
+			}
+		})
 	}
 }
 
@@ -1576,7 +1656,7 @@ func TestAgent_MaxToolIterations_WarnsNearBudget(t *testing.T) {
 		reqs = append(reqs, req)
 		if len(reqs) < 5 {
 			return &provider.Result{ToolCalls: []provider.ToolCall{
-				{ID: "c", Name: "demo__echo", Arguments: `{}`},
+				{ID: "c", Name: "demo__echo", Arguments: fmt.Sprintf(`{"n":%d}`, len(reqs))},
 			}}, nil
 		}
 		return &provider.Result{Content: "done"}, nil

@@ -143,7 +143,8 @@ func TestStdioInbound_CompleterPayload(t *testing.T) {
 }
 
 // End to end: stdin line → Handle → real provider.Client → the
-// OpenAI-compat HTTP body, diffed against the same golden.
+// OpenAI-compat HTTP body. It differs from completer.txt only by the system
+// fold: every system block is one leading message on the wire.
 func TestStdioInbound_WireBody(t *testing.T) {
 	var body wireBody
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,5 +162,5 @@ func TestStdioInbound_WireBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 	const model = "qwen3-coder:30b-a3b-q4_K_M"
 	stdioTurn(t, provider.New(srv.URL, "k", model), model)
-	assertGolden(t, filepath.Join("testdata", "stdio", "completer.txt"), body.format())
+	assertGolden(t, filepath.Join("testdata", "stdio", "wire.txt"), body.format())
 }

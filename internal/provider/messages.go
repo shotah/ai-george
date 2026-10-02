@@ -4,21 +4,22 @@ import "strings"
 
 // LLM_SYSTEM_FOLD modes: how RoleSystem blocks reach the OpenAI-compat body.
 const (
-	// FoldAuto keeps the agent layout (the same as FoldMany).
+	// FoldAuto folds (the same as FoldOne): Ollama's qwen3-coder renderer
+	// keeps only the first system message and drops the rest.
 	FoldAuto = "auto"
 	// FoldOne folds every system block into one leading system message,
 	// for chat templates that render system only at position 0.
 	FoldOne = "one"
-	// FoldMany posts the agent layout as-is (trailing [harness] after the user).
+	// FoldMany posts the agent layout as-is (trailing [harness] after the
+	// user), for a server known to render every system message.
 	FoldMany = "many"
 )
 
 // WireMessagesMode is the chat list actually posted on the OpenAI-compat
-// body. FoldOne folds every system block into one leading system message;
-// any other mode keeps the agent's layout (trailing system after the user,
-// prefix-cache friendly).
+// body. FoldMany keeps the agent's layout; any other mode folds every system
+// block into one leading system message.
 func WireMessagesMode(mode string, msgs []Message) []Message {
-	if strings.ToLower(strings.TrimSpace(mode)) != FoldOne {
+	if strings.ToLower(strings.TrimSpace(mode)) == FoldMany {
 		return msgs
 	}
 	return foldSystemMessages(msgs)

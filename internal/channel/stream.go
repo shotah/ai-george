@@ -4,7 +4,7 @@ import "context"
 
 type replyWriterKey struct{}
 
-// ReplyWriter updates a progressive outbound reply (Telegram edit / stdio).
+// ReplyWriter updates a progressive outbound reply on stdio.
 type ReplyWriter interface {
 	// Update replaces the visible reply with fullText so far.
 	Update(ctx context.Context, fullText string) error
@@ -15,7 +15,7 @@ type ReplyWriter interface {
 }
 
 // ThinkingWriter is an optional ReplyWriter that can show model chain-of-thought
-// separately from the answer (e.g. Telegram expandable italics).
+// separately from the answer.
 type ThinkingWriter interface {
 	ReplyWriter
 	// UpdateThinking replaces the visible reply using accumulated thinking + content.

@@ -47,7 +47,7 @@ func TestComposite_MergesAndRoutes(t *testing.T) {
 	if _, err := c.Call(context.Background(), websearch.ToolName, json.RawMessage(`{"query":"x"}`)); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("empty search client: %v", err)
 	}
-	if _, err := c.Call(context.Background(), "google-search__web_search", json.RawMessage(`{"query":"x"}`)); err == nil || !strings.Contains(err.Error(), "not configured") {
+	if _, err := c.Call(context.Background(), "google_search", json.RawMessage(`{"query":"x"}`)); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("alias should route to builtin: %v", err)
 	}
 }

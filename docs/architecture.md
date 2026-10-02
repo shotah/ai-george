@@ -91,8 +91,8 @@ internal/websearch/  builtin web_search (Brave Search HTTP)
 internal/slash/      REPL command catalog
 ```
 
-One provider implementation is deliberate: Gemini, ChatGPT, and local models
-all speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
+One provider implementation is deliberate: Ollama, llama.cpp, and hosted
+APIs all speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
 `LLM_API_KEY`. The eval grades one local id,
 `qwen3-coder:30b-a3b-q4_K_M`.
 
@@ -299,14 +299,13 @@ through a real `provider.Client` to an `httptest` server. Memory hydration,
 MCP health, and tool schemas are omitted there so the mouth contract stays
 readable; they still append when those subsystems are on.
 
-Gemini's OpenAI-compat layer keeps **one** system instruction. A trailing
-`[harness]` `role=system` after the user is dropped or overwrites the
-persona. `provider.WireMessages` folds every system block into one leading
-system message for `gemini*` models: standing blocks first, this-turn blocks
-last. OpenAI and Ollama keep the trailing system. `LLM_SYSTEM_FOLD=auto|one|many`
-overrides the model-name guess. `auto` folds only for `gemini*`. Whether
-this model's chat template renders a system block after position 0 is still
-unchecked; see [todo.md](todo.md) gap 5.
+The agent layout has the trailing `[harness]` `role=system` block after the
+user. By default (`LLM_SYSTEM_FOLD=auto` or `one`) `provider.WireMessagesMode`
+folds every system block into one leading system message on the wire
+(standing blocks first, this-turn blocks last), because Ollama's
+`qwen3-coder` renderer drops every system message after the first. `many`
+posts the layout as-is. The folded HTTP body is pinned as
+`internal/agent/testdata/stdio/wire.txt`.
 
 ## External dependencies
 
@@ -314,7 +313,7 @@ unchecked; see [todo.md](todo.md) gap 5.
 | --- | --- | --- |
 | MCP client | `github.com/modelcontextprotocol/go-sdk` | Official SDK; stdio transport, schema handling |
 | SQLite | `modernc.org/sqlite` | Pure Go (no CGO), FTS5 works, one file DB |
-| LLM client | `github.com/openai/openai-go/v3` | Official; custom `base_url` covers Gemini, xAI, Ollama |
+| LLM client | `github.com/openai/openai-go/v3` | Official; custom `base_url` covers Ollama, llama.cpp, and hosted APIs |
 | Env config | `github.com/caarlos0/env/v11` | Struct tags → env, tiny |
 | Env file | `github.com/joho/godotenv` | `~/.config/george/env`; does not override the process env |
 | XDG paths | `github.com/adrg/xdg` | Config dir and data dir |

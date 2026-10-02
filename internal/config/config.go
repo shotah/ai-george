@@ -37,8 +37,8 @@ type Config struct {
 	// LLMReasoningEffort is sent as reasoning_effort when non-empty (Ollama/Qwen:
 	// "none" disables thinking so max_tokens is not eaten by hidden chain-of-thought).
 	LLMReasoningEffort string `env:"LLM_REASONING_EFFORT"`
-	// LLMSystemFold is how system blocks reach the wire: one (a single
-	// leading system message), or auto/many (the agent layout).
+	// LLMSystemFold is how system blocks reach the wire: auto/one (a single
+	// leading system message), or many (the agent layout).
 	LLMSystemFold string `env:"LLM_SYSTEM_FOLD" envDefault:"auto"`
 
 	// Unset, these default to Dir(), DataHome(), and Dir()/mcp.toml.
@@ -68,7 +68,6 @@ type Config struct {
 	ToolsEnabled bool `env:"TOOLS_ENABLED" envDefault:"true"`
 
 	// WebSearchEnabled publishes builtin web_search (Brave Search HTTP).
-	// Leftover google-search MCP grants are omitted while this is on.
 	WebSearchEnabled bool `env:"WEB_SEARCH_ENABLED" envDefault:"true"`
 	// BraveSearchAPIKey is the Brave Search subscription token.
 	BraveSearchAPIKey string `env:"BRAVE_SEARCH_API_KEY"`

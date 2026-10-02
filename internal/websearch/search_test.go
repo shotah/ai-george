@@ -15,17 +15,8 @@ func TestOpen_RequiresKey(t *testing.T) {
 	}
 }
 
-func TestIsReplacedMCP(t *testing.T) {
-	if !IsReplacedMCP("google-search", "unused") || !IsReplacedMCP("x", "mcp-gemini-google-search") {
-		t.Fatal("want replaced")
-	}
-	if IsReplacedMCP("google", "google-mcp") || IsReplacedMCP("math", "mcp-go-math") {
-		t.Fatal("workspace/math are not search")
-	}
-}
-
 func TestIsSearchTool(t *testing.T) {
-	for _, name := range []string{ToolName, "google_search", "google-search__web_search", "google_search__web_search"} {
+	for _, name := range []string{ToolName, "google_search"} {
 		if !IsSearchTool(name) {
 			t.Fatalf("%q should be a search tool", name)
 		}
@@ -89,7 +80,7 @@ func TestSearch_AliasAndEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := tools.Call(context.Background(), "google-search__web_search", []byte(`{"query":"nope"}`))
+	out, err := tools.Call(context.Background(), "google_search", []byte(`{"query":"nope"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
