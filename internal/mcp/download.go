@@ -201,7 +201,7 @@ func DownloadPlansLookup(m *Manifest, goos, goarch string, lookup LatestTagFunc)
 	return out, nil
 }
 
-// Commands returns every server command basename (for docker-cp inventories).
+// Commands returns every server command basename (the tools-fetch inventory).
 func Commands(m *Manifest) []string {
 	if m == nil {
 		return nil

@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 
+	"github.com/shotah/george/internal/config"
 	"github.com/shotah/george/internal/mcp"
 )
 
@@ -21,10 +22,7 @@ import (
 // Servers with download_url are listed under downloads.
 // download_tag=latest is resolved via the GitHub API (optional GITHUB_TOKEN).
 func toolsPlanCmd() int {
-	manifest := strings.TrimSpace(os.Getenv("MCP_MANIFEST"))
-	if manifest == "" {
-		manifest = "mcp.toml"
-	}
+	manifest := envOr("MCP_MANIFEST", filepath.Join(config.Dir(), "mcp.toml"))
 	goos, goarch := "linux", "amd64"
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -56,10 +54,10 @@ func toolsPlanCmd() int {
 Usage:
   george tools-plan [--manifest path] [--os linux] [--arch amd64]
 
-Install binaries with: george tools-fetch --outdir DIR
+Install binaries with: george tools-fetch
 
 Env:
-  MCP_MANIFEST   default mcp.toml
+  MCP_MANIFEST   default ~/.config/george/mcp.toml
 `)
 			return 0
 		default:

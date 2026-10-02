@@ -35,7 +35,18 @@ func run() int {
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
+	root, err := setGeorgeRoot()
+	if err != nil {
+		logger.Error("repo root", "err", err)
+		return 1
+	}
+	if err := prependPath(config.BinDir()); err != nil {
+		logger.Error("mcp bin dir on PATH", "err", err)
+		return 1
+	}
+
 	logger.Info("george starting",
+		"root", root,
 		"version", version,
 		"model", cfg.LLMModel,
 		"max_tokens", cfg.LLMMaxTokens,

@@ -6,38 +6,34 @@ import (
 	"testing"
 )
 
-func TestInitCmd_ScaffoldsAndSkips(t *testing.T) {
-	root := t.TempDir()
-	persona := filepath.Join(root, "persona")
-	manifest := filepath.Join(root, "mcp.toml")
-	t.Setenv("PERSONA_DIR", persona)
-	t.Setenv("MCP_MANIFEST", manifest)
+// configDir points init at a temp config dir so a test never writes the
+// real ~/.config/george.
+func configDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "george")
+	t.Setenv("GEORGE_CONFIG_DIR", dir)
+	return dir
+}
 
-	// Run from temp so .env.example lands here.
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
+func TestInitCmd_ScaffoldsAndSkips(t *testing.T) {
+	dir := configDir(t)
+	t.Setenv("PERSONA_DIR", "")
+	t.Setenv("MCP_MANIFEST", "")
 
 	if code := initCmd(); code != 0 {
 		t.Fatalf("init exit %d", code)
 	}
-	personaFile := filepath.Join(persona, "PERSONA.md")
-	if _, err := os.Stat(personaFile); err != nil {
+	for _, name := range []string{"PERSONA.md", "SELF.md", "mcp.toml"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := os.Stat(filepath.Join(dir, "env"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(persona, "SELF.md")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(manifest); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, ".env.example")); err != nil {
-		t.Fatal(err)
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("env mode = %v, want 0600 (it holds keys)", st.Mode().Perm())
 	}
 
 	// Second run skips existing.
@@ -47,6 +43,7 @@ func TestInitCmd_ScaffoldsAndSkips(t *testing.T) {
 }
 
 func TestInitCmd_UnwritablePersona(t *testing.T) {
+	configDir(t)
 	root := t.TempDir()
 	fileAsDir := filepath.Join(root, "notadir")
 	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
@@ -60,6 +57,7 @@ func TestInitCmd_UnwritablePersona(t *testing.T) {
 }
 
 func TestInitCmd_LeavesExistingPersona(t *testing.T) {
+	configDir(t)
 	root := t.TempDir()
 	persona := filepath.Join(root, "persona")
 	if err := os.MkdirAll(persona, 0o755); err != nil {
@@ -72,15 +70,6 @@ func TestInitCmd_LeavesExistingPersona(t *testing.T) {
 	manifest := filepath.Join(root, "mcp.toml")
 	t.Setenv("PERSONA_DIR", persona)
 	t.Setenv("MCP_MANIFEST", manifest)
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
 
 	if code := initCmd(); code != 0 {
 		t.Fatalf("init exit %d", code)

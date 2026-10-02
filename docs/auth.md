@@ -170,7 +170,6 @@ george auth youtube     # device flow in the terminal
 george auth garmin      # interactive TTY
 ```
 
-See [deploy-docker.md § MCP tool auth](deploy-docker.md#mcp-tool-auth-browser-oauth).
 
 ---
 

@@ -68,7 +68,7 @@ const enableReviewNote = "[system] Review [mcp prefixes] on vs off this turn. If
 
 // theaterCueMaxChars: a stop reply this long is already the answer. Matching
 // "I've added…" or a server__tool name inside a design essay must not start
-// another Completer round — Gemini often returns empty on that follow-up.
+// another Completer round, and models often return empty on that follow-up.
 const theaterCueMaxChars = 1500
 
 // Options configures the agent.
@@ -582,7 +582,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	// Names to force on the next call, set when a tool name failed to resolve.
 	var forceNames []string
 	budgetWarned := false
-	// User-facing prose from an earlier round this turn. Gemini often returns
+	// User-facing prose from an earlier round this turn. Models can return
 	// empty after a mixed narration+tool call (or after a theater nudge); keep
 	// that text instead of erroring the turn.
 	var lastNarration string
@@ -826,12 +826,11 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						"OR give a final answer that reports the tool error and stops. Giving up is fine. " +
 						"Do not ask for a moment or promise another attempt without calling a tool."
 				}
-				// The nudge rides as a user turn, not a system one. On Gemini
-				// every system block folds into the leading instruction, which
-				// would leave the conversation ending on the assistant's own
-				// prose — a shape Gemini's compat layer rejects with a bare 400,
-				// and the human hears nothing. User-role keeps the alternation
-				// valid on every provider; the [system] prefix tells the model
+				// The nudge rides as a user turn, not a system one. Under
+				// LLM_SYSTEM_FOLD=one every system block folds into the leading
+				// instruction, which would leave the conversation ending on the
+				// assistant's own prose. User-role keeps the alternation valid
+				// on every chat template; the [system] prefix tells the model
 				// who is talking.
 				messages = append(messages, provider.Message{
 					Role:    provider.RoleUser,

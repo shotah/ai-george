@@ -243,6 +243,43 @@ func TestClient_Complete_HTTPError(t *testing.T) {
 	}
 }
 
+// Ollama answers an unknown model with a top-level 404 body. The human needs
+// to hear which model and which env var, not a raw POST line.
+func TestClient_ModelNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"model 'bad_name' not found","type":"not_found_error","param":null,"code":null}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "bad_name")
+	req := provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}}
+	_, errComplete := c.Complete(context.Background(), req)
+	_, errStream := c.CompleteStream(context.Background(), req, nil)
+	for name, err := range map[string]error{"complete": errComplete, "stream": errStream} {
+		if err == nil || !strings.Contains(err.Error(), `model "bad_name" was not found`) || !strings.Contains(err.Error(), "LLM_MODEL") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// A 404 that doesn't name the model (wrong base URL path) is not a model problem.
+func TestClient_NotFoundWithoutModelStaysRaw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "qwen3-coder:30b-a3b-q4_K_M")
+	_, err := c.Complete(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err == nil || strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestClient_Complete_ToolMessageRoundTrip(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -250,28 +287,28 @@ func TestClient_Complete_ToolMessageRoundTrip(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		foundTool := false
-		var sawSkipSig bool
 		for _, m := range body.Messages {
 			if m["role"] == "tool" {
 				foundTool = true
 			}
 			if m["role"] == "assistant" {
 				tcs, _ := m["tool_calls"].([]any)
-				for _, raw := range tcs {
-					tc, _ := raw.(map[string]any)
-					extra, _ := tc["extra_content"].(map[string]any)
-					google, _ := extra["google"].(map[string]any)
-					if google["thought_signature"] == "skip_thought_signature_validator" {
-						sawSkipSig = true
-					}
+				if len(tcs) != 1 {
+					t.Errorf("assistant tool_calls = %v", tcs)
+					continue
+				}
+				tc, _ := tcs[0].(map[string]any)
+				fn, _ := tc["function"].(map[string]any)
+				if tc["id"] != "c1" || tc["type"] != "function" || fn["name"] != "demo__echo" || fn["arguments"] != "{}" {
+					t.Errorf("tool_call = %v", tc)
+				}
+				if _, ok := tc["extra_content"]; ok {
+					t.Errorf("tool_call carries provider extras: %v", tc)
 				}
 			}
 		}
 		if !foundTool {
 			t.Error("expected tool role message")
-		}
-		if !sawSkipSig {
-			t.Error("expected synthesized thought_signature skip token on assistant tool_calls")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -301,56 +338,6 @@ func TestClient_Complete_ToolMessageRoundTrip(t *testing.T) {
 	}
 	if got.Content != "done" {
 		t.Fatalf("%q", got.Content)
-	}
-}
-
-func TestClient_Complete_PreservesThoughtSignatureRaw(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		for _, m := range body.Messages {
-			if m["role"] != "assistant" {
-				continue
-			}
-			tcs, _ := m["tool_calls"].([]any)
-			if len(tcs) == 0 {
-				t.Fatal("missing tool_calls")
-			}
-			tc, _ := tcs[0].(map[string]any)
-			extra, _ := tc["extra_content"].(map[string]any)
-			google, _ := extra["google"].(map[string]any)
-			if google["thought_signature"] != "sig-from-model" {
-				t.Fatalf("thought_signature=%v want sig-from-model", google["thought_signature"])
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "x",
-			"choices": []map[string]any{
-				{"index": 0, "message": map[string]any{"role": "assistant", "content": "ok"}},
-			},
-		})
-	}))
-	t.Cleanup(srv.Close)
-
-	raw := json.RawMessage(`{"id":"c1","type":"function","function":{"name":"demo__echo","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig-from-model"}}}`)
-	c := provider.New(srv.URL, "k", "m")
-	_, err := c.Complete(context.Background(), provider.Request{
-		Messages: []provider.Message{
-			{Role: provider.RoleUser, Content: "hi"},
-			{
-				Role: provider.RoleAssistant,
-				ToolCalls: []provider.ToolCall{
-					{ID: "c1", Name: "demo__echo", Arguments: `{}`, Raw: raw},
-				},
-			},
-			{Role: provider.RoleTool, Content: "ok", ToolCallID: "c1"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 

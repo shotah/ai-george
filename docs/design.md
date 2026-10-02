@@ -2,503 +2,416 @@
 
 Harness contract: principles, env, agent loop, memory, ops, packaging,
 security. Pitch and hello path: [root readme](../readme.md). Diagrams:
-[architecture.md](architecture.md).
+[architecture.md](architecture.md). What was cut and what is still open:
+[coding-agent-plan.md](coding-agent-plan.md).
 
-George is an **AI harness** — the runtime around one model so an agent can
-**plan on a long horizon**. The model predicts tokens. The harness makes a
-turn finish, a tool call land, and a goal survive tomorrow.
-
-## Problem
-
-Platform agent stacks drift toward multi-agent products: multiple providers,
-dashboards, console features, config UI. Our deployment model is the opposite:
+george is the runtime around one local model so a coding turn finishes.
+The model predicts tokens. The harness makes a tool call land, a bad name
+resolve, and the reply come back on stdout.
 
 ```text
-process = persona + model + MCP set + data dir
+process = contract + persona + one model + fs/git/shell/github + one sqlite file
 ```
 
-Want another LLM or persona? Another process (second compose service or
-systemd unit). No in-process routing, no dashboard — a harness that does
-exactly that and nothing else.
-
-Deploy shapes: [deploy-docker.md](deploy-docker.md) (Hub) ·
-[deploy-native.md](deploy-native.md).
+You run it in a repo. It edits that tree and exits when you quit. A second
+model or a second persona is a second process. No in-process routing, no
+dashboard.
 
 ## Principles
 
-1. **Stupid simple.** One agent, one model, one channel loop. If a feature
-   needs a diagram to explain, it probably belongs in an MCP binary, not here.
-2. **Highly performant.** Pure Go, static binary, no CGO, small RSS, no
-   background frameworks. Long-poll + goroutines; nothing dials in. Speed is a
-   product feature: curated tool schemas, parallel tool batches (progress per
-   Completer call), in-process FTS memory (no embedding round-trip), and a
-   Gemini 3–compatible tool loop that preserves `thought_signature` so
-   multi-step turns finish instead of 400’ing. See **Local-model hardening**
-   below.
-3. **Highly portable.** `CGO_ENABLED=0` static binary — systemd or Distroless
-   (no shell in the image). No glibc dependency in our binary.
-4. **Plugin-centric.** Capabilities come from external binaries over MCP
-   stdio. The george **is the harness**: it hosts tools; it does not implement
-   them (except a few builtins: memory, cron, watch, `self_note`, `web_search`). Import
-   libraries over writing our own.
-5. **1:1, always.** One process, one CHANNEL mouth, one conversation (`george`),
-   one memory/cron/watch set. No multi-provider config, no multi-agent config,
-   no peer routing. Scaling = more processes.
-6. **Env + files is the config plane.** Secrets and scalars via env. Structure
-   via persona markdown, MCP manifest, and a data directory.
+1. **Stupid simple.** One agent, one model, stdin/stdout. If a feature needs
+   a diagram to explain, it belongs in an MCP binary.
+2. **Progress per Completer call.** The standing prompt is re-billed every
+   round. Independent reads and patches go out as one batch. The last two
+   tool rounds stay whole; older rounds collapse in-process, with no extra
+   completion.
+3. **Highly portable.** `CGO_ENABLED=0` static binary. No CGO, no glibc
+   dependency in our binary.
+4. **Plugin-centric.** Workspace read, patch, git, and shell are MCP
+   children. The harness hosts them. Builtins are memory, `self_note`, and
+   `web_search`. Import a library over writing one.
+5. **1:1.** One process, one conversation (`george`), one model endpoint.
+   No multi-provider config, no multi-agent config, no peer routing.
+6. **Env + files is the config plane.** Keys in `~/.config/george/env`.
+   Structure in persona markdown, `mcp.toml`, and the data directory. The
+   process environment wins over the env file.
 7. **Memory is structured and inspectable.** SQLite rows you can read and
-   delete with `sqlite3`, not opaque embedding blobs. Persona files always
-   outrank recalled memory.
-8. **Long-horizon.** The harness holds goals, personality, and work across
-   sessions. Memory, cron, watches, history fold, and `SELF.md` are first-class
-   — not extras you add when a chatbot gets boring.
-
-## Harness and long-horizon planning
-
-Industry language for what this binary always was.
-
-An **AI harness** is everything around the model at runtime: the tool loop,
-MCP host, context bounds, memory, persona, and the channel. The model is a
-stateless token predictor. The harness is why a turn finishes, a name typo
-still calls the right tool, and yesterday’s aim is still on the board after
-`/new`.
-
-**Long-horizon planning** is the goal: hold aims, personality, and work across
-days and weeks — not a chatbot that dies when the context window gets
-expensive. That is why these pieces live in the harness, not in an MCP:
-
-| Horizon work | What the harness does |
-| --- | --- |
-| Standing goals | Cron + watches fire the same loop later; the daily planner wakes once to plan the day |
-| Personality | `SELF.md` / `self_note` / Voice distill outlive `/new` |
-| Facts | SQLite memory + consolidator; persona files outrank recall |
-| Context that does not rot | History caps, `Facts:`/`Voice:` fold, tool collapse |
-| Turns that actually finish | Tool repair, landing call, local-model hardening |
-
-## Progress per invocation
-
-A Completer invocation is the expensive unit. The **completed objective** is
-what we optimize. The horizon is the unit of *product*.
-
-Stop optimizing turns. Optimize **progress per model invocation**.
-
-The standing prompt (persona, history, schemas) is re-billed every Completer
-call. Serial lookups — think → tool → think → tool — multiply that prefix and
-invite recovery loops. Independent work belongs in one batch:
-
-```text
-context → plan the next state transition → fan out tools → consolidate → repeat
-```
-
-That is why these pieces live in the harness:
-
-| Piece | Trajectory job |
-| --- | --- |
-| Compact persona | Stable behavioral prior without eating context |
-| SQLite memory | Don't rediscover the world every round |
-| Caps, collapse, `mcp_enable` | Enough context for a large decision, not everything |
-| Parallel tool batches | Maximize work between Completer calls |
-| MCP | Expand the action surface without stuffing tools into the prompt |
-| Go runtime | Actual concurrent execution of a batch |
-| Cron / watches / `SELF.md` | Preserve trajectory across days |
-| Token accounting | Trajectory cost (invocations × prefix), not tokens on one call |
-
-A slightly more expensive individual round can be a dramatically cheaper
-trajectory. `/perf` records the comparison: invocations, tools, max batch,
-recoveries, prompt/gen estimates, wall time, outcome.
-
-A single chat turn is still how one user message *executes*. The horizon is
-still why the loop exists. We named it; we did not invent a second architecture.
+   delete with `sqlite3`. No embeddings. Repo files outrank recalled rows.
+   The contract outranks `PERSONA.md`.
 
 ## Who it’s for
 
-Anyone who wants `docker compose up` (or systemd + Ollama) and a long-horizon
-agent on their phone. Anti-fit: web UI, team workspace, inbound webhooks,
-no-code canvases, “Cursor for the company.” Those are other products. A yard
-console for several agents is [gantree](https://github.com/shotah/gantree).
+Someone who wants `cd repo && george` against a local OpenAI-compatible
+model (the eval grades `qwen3-coder:30b-a3b-q4_K_M` on Ollama). The human
+types a task. The agent reads, patches, runs the check, and reports.
+
+Anti-fit: a phone assistant, a web UI, a team workspace, inbound webhooks,
+a control UI, skills directories, subagents. A yard console for several
+agents is [gantree](https://github.com/shotah/gantree).
 
 ## Non-goals
 
-- Web dashboard, gateway, REST/WS API, pairing flows
+- Web dashboard, gateway, REST/WS API, pairing flows, inbound port
 - Multi-agent / multi-provider / model fallback chains
-- Built-in workspace tools (those are MCP binaries)
+- A second model for tool shims, titles, or summarising each tool pair
+- Built-in workspace tools (those are `fs-mcp`, `git-mcp`, `shell-mcp`, `github-mcp`)
 - Vector DB / embedding service
-- In-process sandboxing / risk profiles (the container is the sandbox;
-  channel allowlist is the gate)
+- An in-process sandbox or an approval prompt (git is the undo)
+- Clock-driven work: cron, watches, a daily planner, proactive pings
 
-Cron, watches, and the daily planner are env-driven. Streaming: `STREAM_REPLIES=true`.
+Streaming is on: `STREAM_REPLIES=true`.
 
 ## Local-model hardening
 
-Most agent stacks assume frontier cloud models and huge tool catalogs. This
-harness is hardened where 4–30B local models actually fail — and the same
-levers cut prompt tokens on Flash/ChatGPT (schemas, history, and tool results
-are re-billed every turn). Long-horizon work is worthless if a mid-chain
-tool turn 400s.
+Most agent stacks assume a frontier model and a huge catalog. This harness
+is hardened where a local coder model actually fails. The same levers cut
+prompt tokens, because schemas, history, and tool results are re-billed
+every round.
 
 | Lever | What we do | Why it matters |
 | --- | --- | --- |
-| Tool surface | Manifest filters + MCP `--tool-tier` | Smaller schemas → better tool picks |
-| Name repair | Prefix alias/rebuild, closest-name hints, then a grammar-constrained retry | `google_search__…` still lands |
-| Think stalls | Promote CoT → reply after tools | Multi-step turns finish instead of ERROR |
-| Printed calls | Parse a tool call written as text and run it | A model that prints `{"name":…}` never speaks JSON at you |
-| Multi-bubble | Steer + settle (`COALESCE_SETTLE_MS`) | Follow-ups join the live turn; MCP calls kept |
-| Memory | SQLite + FTS5 in-process | No embedding API before every reply |
-| Personality | `SELF.md` + `self_note` + distill on `/new` | The funny agent survives resets |
-| Runtime | One static binary (systemd *or* Distroless) | No Node/Bun/gateway in the path |
-| Gemini 3 | Preserves `thought_signature` on tool rounds | Cloud multi-step turns don't 400 |
+| Tool surface | `force = true` on `fs` `git` `shell` `github`; other prefixes wait for `mcp_enable` | The edit schemas are on every turn; the rest stay off until asked |
+| Name repair | Hyphenated prefix, wrong separator (`fs.file_get`), unique bare name, then at most five closest names and one grammar-constrained retry | A typo does not cost a whole extra guess when the host can see the answer |
+| Printed calls | Parse a tool call written as text and run it | A model that prints `{"name":…}` still calls the tool |
+| Landing call | At `TOOL_MAX_ITERATIONS` the next call has no tools | The turn ends in a reply, not an error that drops the work |
+| Round warning | Past ~70% of the budget, one note says how many rounds remain | The model can wrap up before the landing call |
+| Tool collapse | Last two rounds stay whole, including a parallel batch; older rounds become a one-line marker | A long edit does not fill the window with old file bodies |
+| Memory | SQLite + FTS5 in-process | No embedding call before the reply |
+| Taste | `SELF.md` + `self_note` + distill on `/new` | How you like a change shaped survives the reset |
+| Runtime | One static binary on `PATH` | No gateway process in front of the model |
 
 MCP tools share one `{server}__{tool}` name and one repair path. Details:
-[mcp.md](mcp.md) · [deploy-native.md](deploy-native.md).
+[mcp.md](mcp.md). The four coding servers: [coding-mcp.md](coding-mcp.md).
+
+`provider` still echoes Gemini `thought_signature` on tool rounds when the
+model name contains `gemini`. The graded socket is the local one.
+`LLM_SYSTEM_FOLD=auto` folds system text into one leading message only for
+`gemini*`. A local template that renders system text only at position 0
+needs `LLM_SYSTEM_FOLD=one`. That check against this model's template is
+still open ([todo.md](todo.md) gap 5).
+
+## Progress per invocation
+
+A Completer invocation is the expensive unit. The completed edit is what
+we optimize.
+
+```text
+context → next state → fan out tools → read the results → repeat
+```
+
+| Piece | Job |
+| --- | --- |
+| Short contract | How the work is done, without eating the window |
+| SQLite memory | Don't rediscover this repo's commands every round |
+| Caps, collapse, `mcp_enable` | Enough context for the next edit, not the whole catalog |
+| Parallel tool batches | Several independent reads, or one `file_patch` per file, between Completer calls |
+| MCP | The action surface stays out of the Go binary |
+| Go runtime | A batch actually runs concurrently (one stdio child still serializes its own calls) |
+| `SELF.md` | Taste survives `/new` |
+| `/perf` | Invocations, tools, max batch, recoveries, prompt/gen estimates, wall time, outcome |
 
 ## Configuration contract
 
-Everything is env or a mount. No config UI, no `config set`, no sync step.
-Boot is fail-fast: missing required env = clear error + exit 1.
+Scalars are env. Structure is files. No config UI. Boot is fail-fast:
+missing `LLM_BASE_URL`, `LLM_API_KEY`, or `LLM_MODEL` exits 1. A variable in
+`config.Retired` (`CHANNEL`, `TELEGRAM_*`, `CRON_*`, `WATCH_*`,
+`MEMORY_CONSOLIDATE_MINUTES`, `COALESCE_SETTLE_MS`, and the rest) also
+exits 1. An old env file should fail, not quietly do nothing.
+
+`config.Load` reads `~/.config/george/env` first. A variable already set in
+the process environment wins. `GEORGE_CONFIG_DIR` overrides the config
+directory.
 
 ### Environment variables
 
 | Var | Required | Example / default |
 | --- | --- | --- |
-| `LLM_BASE_URL` | yes | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| `LLM_API_KEY` | yes | — |
-| `LLM_MODEL` | yes | `gemini-3.5-flash` |
-| `LLM_MAX_TOKENS` | no | `4096` (completion output cap; `0` = provider default) |
-| `LLM_REASONING_EFFORT` | no | empty (Ollama/Qwen: `none` disables thinking so max tokens aren't eaten by CoT) |
-| `LLM_SYSTEM_FOLD` | no | `auto` (`gemini*` → `one` leading system message; else `many` keeps the trailing `[harness]`). Set `one` for a local template that renders system only at position 0 |
-| `TELEGRAM_BOT_TOKEN` | yes (telegram) | — |
-| `TELEGRAM_ALLOWED_USERS` | yes (telegram) | `123456789,987654321` (numeric IDs; **allowlist only — no pairing**) |
-| `TELEGRAM_ERROR_REPORTING` | no | `off` (`off`\|`error`\|`warn` — tee slog into the Telegram chat) |
-| `DISCORD_BOT_TOKEN` | yes (discord) | — |
-| `DISCORD_ALLOWED_USERS` | yes (discord) | snowflake user IDs |
-| `SLACK_BOT_TOKEN` | yes (slack) | `xoxb-…` bot token |
-| `SLACK_APP_TOKEN` | yes (slack) | `xapp-…` app-level token |
-| `SLACK_ALLOWED_USERS` | yes (slack) | Slack member IDs |
-| `PENDANT_MAILBOX_URL` | yes (pendant) | `wss://…/ws/<slug>` — outbound to the gantry-pendant Worker |
-| `PENDANT_BEARER` | yes (pendant) | mailbox bearer bound to that slug |
-| `PENDANT_ALLOWED_USERS` | yes (pendant) | Google `sub`, `sub:email`, or email |
-| `CHANNEL` | no | `telegram` (default), `discord`, `slack`, `pendant`, or `stdio` |
-| `PERSONA_DIR` | no | `/persona` |
-| `DATA_DIR` | no | `/data` |
-| `MCP_MANIFEST` | no | `/etc/george/mcp.toml` |
+| `LLM_BASE_URL` | yes | `http://127.0.0.1:11434/v1` |
+| `LLM_API_KEY` | yes | any non-empty string for a local server that ignores it |
+| `LLM_MODEL` | yes | `qwen3-coder:30b-a3b-q4_K_M` |
+| `LLM_MAX_TOKENS` | no | `4096` (completion output cap, including tool-call args; `0` = provider default) |
+| `LLM_REASONING_EFFORT` | no | empty (Ollama/Qwen: `none` so max tokens are not eaten by hidden chain-of-thought) |
+| `LLM_SYSTEM_FOLD` | no | `auto` (`gemini*` → one leading system message; otherwise the agent layout, with `[harness]` after the user). `one` for a template that renders system only at position 0 |
+| `GEORGE_CONFIG_DIR` | no | `~/.config/george` |
+| `GEORGE_ROOT` | no | git toplevel of the cwd |
+| `PERSONA_DIR` | no | `GEORGE_CONFIG_DIR` |
+| `DATA_DIR` | no | `~/.local/share/george` (`XDG_DATA_HOME`) |
+| `MCP_MANIFEST` | no | `$GEORGE_CONFIG_DIR/mcp.toml` |
 | `HISTORY_MAX_MESSAGES` | no | `200` |
 | `HISTORY_MAX_TOKENS` | no | `32000` (chars/4 estimate; older turns fold into `Facts:` / `Voice:`) |
 | `HISTORY_STRIP_FILLERS` | no | `true` (prompt-only; last 40 messages verbatim; assistant never stripped) |
 | `TOOL_RESULT_MAX_CHARS` | no | `6000` |
-| `TOOL_MAX_ITERATIONS` | no | `25` (at the cap a final no-tools call forces a text reply) |
-| `TOOL_SCHEMA_MAX_TOKENS` | no | `0` (log estimate only; `>0` = hard fail if over) |
-| `TOOLS_ENABLED` | no | `true` (`false` omits all tool schemas — models that reject tools, e.g. Ollama gemma3) |
-| `WEB_SEARCH_ENABLED` | no | `true` (builtin `web_search`; leftover `google-search` MCP grants are omitted) |
-| `BRAVE_SEARCH_API_KEY` | no | Brave Search subscription token — titles, URLs, snippets; not a second model |
-| `MCP_ENABLE_FORCE` | no | comma-separated prefixes always published when `dynamic_tools` is on |
-| `SELF_NOTES_ENABLED` | no | `true` (auto-off when `PERSONA_DIR` is read-only) |
+| `TOOL_MAX_ITERATIONS` | no | `25` (then one no-tools landing call) |
+| `TOOL_SCHEMA_MAX_TOKENS` | no | `0` (log the estimate; `>0` fails boot if the catalog is over) |
+| `TOOLS_ENABLED` | no | `true` (`false` omits every tool schema) |
+| `WEB_SEARCH_ENABLED` | no | `true` (builtin `web_search`; a leftover `google-search` grant is omitted) |
+| `BRAVE_SEARCH_API_KEY` | no | Brave Search token — titles, URLs, snippets; off without it |
+| `MCP_ENABLE_FORCE` | no | comma-separated prefixes always published when `dynamic_tools` is on (the manifest's `force = true` is the other way) |
+| `SELF_NOTES_ENABLED` | no | `true` (off when `PERSONA_DIR` is not writable) |
 | `MEMORY_ENABLED` | no | `true` |
 | `MEMORY_BACKEND` | no | `builtin` (or `mcp:<server-name>`) |
-| `MEMORY_CONSOLIDATE_MINUTES` | no | `30` (`0` = off; builtin backend only) |
-| `CRON_ENABLED` | no | `true` |
-| `CRON_TZ` | no | `America/Los_Angeles` |
-| `CRON_MAX_JOBS` | no | `50` |
-| `CRON_TICK_SECONDS` | no | `15` |
-| `WATCH_ENABLED` | no | `true` |
-| `WATCH_MAX` | no | `50` |
-| `EXAMPLES_QTY` | no | `1-2` (empty/`0` = no proactive pings) |
-| `EXAMPLES_START_HOUR` / `EXAMPLES_END_HOUR` | no | `6` / `21` |
-| `EXAMPLES_SKIP_RECENT_MINUTES` | no | `60` |
-| `STREAM_REPLIES` | no | `true` (Telegram edit-in-place / stdio token stream) |
+| `STREAM_REPLIES` | no | `true` |
 | `SHOW_THINKING` | no | `true` (needs `STREAM_REPLIES`) |
 | `TOOL_TRACE` | no | `compact` (`compact`\|`full`\|`off`; needs `STREAM_REPLIES`) |
-| `COALESCE_SETTLE_MS` | no | `2000` (`0` = off) |
-| `SPINUP_NOTICE_MS` | no | `4000` (`0` = off) |
+| `SPINUP_NOTICE_MS` | no | `4000` (`0` = off; a still-working line before the first token) |
 | `LOG_LEVEL` | no | `info` |
+| `GITHUB_TOKEN` | no | `github-mcp` and `tools-fetch` rate limits; a missing token skips that server |
 
-Source of truth is `internal/config/config.go`. Add new vars here in the same
-change.
+Source of truth is `internal/config/config.go`. Add a variable there in the
+same change as this table.
 
-### MCP manifest (the one file)
+`HISTORY_MAX_TOKENS=32000` and `TOOL_RESULT_MAX_CHARS=6000` were sized for a
+cloud window. The eval sets `OLLAMA_CONTEXT_LENGTH=32768`. Resetting those
+two from a measured `/tokens` reading is still open
+([coding-agent-plan.md](coding-agent-plan.md#defaults-that-fight-a-32k-window)).
 
-Lists of processes don't fit env vars. TOML, mounted read-only. If a server is
-listed, the agent gets it — the process composition **is** the grant.
+### MCP manifest
+
+Lists of processes don't fit env vars. One TOML file. If a server is listed,
+the agent may call it — membership is the grant. A server that fails to
+connect is skipped; the others stay up.
 
 ```toml
 [[server]]
-name    = "google"
-command = "google-mcp"
-args    = ["--preset", "everyday"]
-auth_args = ["auth"]
-download_tag = "latest"
-download_url = "https://github.com/shotah/google-mcp/releases/download/{tag}/google-mcp_{version}_{os}_{arch}.tar.gz"
-# tools   = ["calendar_list_events"]  # optional allowlist
-# exclude = ["raw_*"]                 # optional denylist
+name    = "fs"
+command = "fs-mcp"
+args    = ["--root", "${GEORGE_ROOT}", "--tool-tier", "core"]
+force   = true
 ```
 
+`args` and `env` expand `${VAR}` before the child starts. `george run` sets
+`GEORGE_ROOT` and puts `~/.local/share/george/bin` first on `PATH`.
 `download_url` + `download_tag` feed `george tools-fetch`. Placeholders:
-`{os}` `{arch}` `{tag}` `{version}` (`version` = tag without leading `v`).
-`george tools-plan` prints the resolved inventory without downloading.
-Optional `auth_command` / `auth_args` drive `george auth <name>` and chat
-`/auth` — [auth.md](auth.md), [deploy-docker.md](deploy-docker.md#mcp-tool-auth-browser-oauth).
+`{os}` `{arch}` `{tag}` `{version}` (`version` = tag without a leading `v`).
+`george tools-plan` prints the inventory without downloading.
 
-Listed servers still **start**; `tools` / `exclude` only filter what is
-**published** to the model. Tool names are always `{server}__{tool}`. Local
-models often rewrite the prefix; the host repairs unambiguous mistakes.
-Full contract: **[mcp.md](mcp.md)**.
+`tools` / `exclude` filter what is **published**. The child still starts.
+Names are `{server}__{tool}`. Full contract: [mcp.md](mcp.md).
 
-### Host layout
+### Files
 
-Same three directories whether Docker bind-mounts them or systemd points at
-`/opt/george/…`:
-
-| Role | Typical path |
+| Role | Path |
 | --- | --- |
-| Persona markdown | `PERSONA_DIR` → `/persona` or `/opt/george/persona` |
-| MCP manifest | `MCP_MANIFEST` → `/etc/george/mcp.toml` or `/opt/george/mcp.toml` |
-| SQLite + secrets | `DATA_DIR` → `/data` or `/opt/george/data` |
+| Env, manifest, persona | `~/.config/george/` (`env`, `mcp.toml`, `PERSONA.md`, `SELF.md`) |
+| SQLite | `~/.local/share/george/george.db` |
+| MCP binaries | `~/.local/share/george/bin` |
+| Workspace | `GEORGE_ROOT` |
 
-Only `PERSONA.md` (you) then `SELF.md` (the agent) load. Extra `*.md` is
-ignored. Missing files are tolerated; empty persona is allowed but unusual.
-Boot migrates leftover `SOUL.md` / `RULES.md` / `USER.md` / `TOOLS.md` into
-`PERSONA.md` if needed, then deletes them. MCP tool names belong in the live
-catalog, not persona. Keep `PERSONA.md` short.
+Prompt order is the embedded contract, then `PERSONA.md`, then `SELF.md`.
+Other `*.md` in that directory is ignored. A missing directory still yields
+the contract. `george init` writes the config directory and skips files
+that exist. The env file is mode `0600`.
 
-## Agent loop & context bounds
+`PERSONA.md` is name, voice, and tone. Empty is the shipped default. george
+never writes it. Headings the harness used to own (`## Self-notes`,
+`## Location pins`, `## Follow-up`, `## Reactions`) are dropped from the
+prompt at load time and left on disk.
 
-This is the heart of the harness. Keep it boring and bounded. A long-horizon
-agent is still one turn at a time; the loop is how those turns chain without
-losing the plot:
+## Agent loop
 
-1. **Assemble prompt**: `PERSONA.md` + `SELF.md` + memory hydration + session
-   history (bounded) + user message. MCP names are **not** in persona.
-2. **Call model** with MCP tool schemas (loaded eagerly at boot; refreshed on
-   server restart; this is the live catalog).
-3. **Tool iteration**: execute a **batch** via the MCP host (independent
-   calls run concurrently; same-server stdio still serializes). Repair
-   unambiguous prefix mistakes, else suggest closest real names *and*
-   constrain the next call to them. Truncate each result to
-   `TOOL_RESULT_MAX_CHARS`. Loop until final text or `TOOL_MAX_ITERATIONS`.
-   At ~70% of the budget the model is told how many rounds remain; at the
-   cap one landing call runs with tools withheld so the turn ends in a real
-   reply. Each call appends a trace line to a streaming reply so long
-   chains show motion.
-4. **Reply** on the channel; append turn to session.
+One human line is one turn. The REPL reads the next line only after the
+reply. Keep the loop bounded:
 
-Every objective logs its trajectory: `model call`, `tool done`, and `turn perf`
-(`source`, `user_id`, `session_id`, `iterations`, `tool_calls`, `max_batch`, `recoveries`, `prompt_est_tokens`,
-`gen_est_tokens`, native `prompt_tokens` / `completion_tokens` / `total_tokens` when the Completer sent `usage`,
-`model`, `finish_reason`, `model_ms` / `tool_ms` / `total_ms`, `outcome`). On local
-models the model/tool split is still which half to attack —
-[deploy-native.md](deploy-native.md#latency-measure-before-tuning). `/perf`
-shows the same numbers in chat.
+1. **Assemble.** Contract + `PERSONA.md` + `SELF.md` + optional summary +
+   history + optional `[memory]` + server health + the user line +
+   `[harness]` clock. Tool schemas are on the request, not in the persona.
+2. **Call the model** with the published catalog (`force = true` prefixes
+   always; other prefixes only after `mcp_enable`).
+3. **Tool iteration.** One batch per round. Independent calls run
+   concurrently; one stdio child still serializes its own calls. Repair an
+   unambiguous name, otherwise return at most five closest names and
+   constrain the next call to them. Salvage a call printed as JSON.
+   Truncate each result to `TOOL_RESULT_MAX_CHARS`. Past ~70% of
+   `TOOL_MAX_ITERATIONS`, one note says how many rounds remain. At the cap,
+   one landing call runs with tools withheld.
+4. **Reply** on stdout, then append the turn. Finish the stream before the
+   SQLite write so a complete draft is not held for the fold.
+
+Every turn logs `turn perf`: `iterations`, `tool_calls`, `max_batch`,
+`recoveries`, prompt/gen estimates, native `usage` when the completer sent
+it, `model_ms` / `tool_ms` / `total_ms`, `outcome`. `/perf` prints the same
+record.
 
 | Mechanism | Behavior |
 | --- | --- |
-| History caps | Drop oldest past `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_TOKENS` (chars/4 **estimate**). Prompt-only filler strip on user messages older than the last 40; assistant turns stay verbatim. SQLite is not rewritten. |
-| Rolling summary | Trimmed turns fold into `session.summary` (`Facts:` + `Voice:`) via the same LLM; Voice copies forward; reinjected later |
-| Tool truncate | Each MCP/memory tool result capped at `TOOL_RESULT_MAX_CHARS` |
-| Tool collapse | Tool payloads from rounds older than the last 2 tool rounds become one-line markers; matching tool-call args are stubbed. A round is one model-emitted batch, so a three-call batch is read back whole. Session history never stores tool payloads. |
-| Iteration cap | `TOOL_MAX_ITERATIONS` Completer rounds with tools, then one landing call with tools withheld |
+| History caps | Drop oldest past `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_TOKENS` (chars/4 estimate). Filler strip is prompt-only, on user lines older than the last 40. SQLite stays verbatim. |
+| Rolling summary | Trimmed turns fold into `session.summary` (`Facts:` + `Voice:`) via one completion on the same model. That completion is still in the loop; dropping it is open ([todo.md](todo.md) gap 9). |
+| Tool truncate | Each tool result capped at `TOOL_RESULT_MAX_CHARS` |
+| Tool collapse | Payloads older than the last 2 tool rounds become one-line markers; matching tool-call args are stubbed to `{}`. A round is one model-emitted batch. Session history stores the reply text, not tool payloads. |
+| Iteration cap | `TOOL_MAX_ITERATIONS` rounds with tools, then one landing call |
 
-`/new` wipes the session. `Voice:` folds into `SELF.md` (when self-notes are
-enabled). `Facts:` park as a memory episode — `PERSONA.md` is operator-owned and
-is never written. Existing memory rows stay.
+`/new` wipes that session. `Voice:` folds into `SELF.md` when self-notes are
+on. `Facts:` park as a memory episode. `PERSONA.md` is never written.
+Other memory rows stay.
 
 ### Self-notes (`SELF.md`)
 
-Persona files describe who the agent **should** be. `SELF.md` is who it
-**became** with you — and unlike chat history, it outlives `/new`.
+`PERSONA.md` is who you asked the agent to sound like. `SELF.md` is the
+coding taste it has learned — review style, commit shape, what never to do —
+and it outlives `/new` and a change of repo.
 
-- Lives in `PERSONA_DIR`, loaded in the stable prompt prefix (`PERSONA.md` →
-  `SELF.md`).
-- Mid-chat: `self_note` appends one short line.
-- On history trim: new `Voice:` bits append the same way.
-- On `/new`: distill **merges** into `SELF.md` (keep quoted jokes and
-  nicknames). A bland tool session without Voice does not rewrite the file.
-- Cap ~4KB; at capacity the tool (and trim append) refuse until distill or
-  you prune.
-- Needs a **writable** persona directory (`SELF_NOTES_ENABLED`, default on).
-  Docker `:ro` silently disables the feature.
-- **North-star aims** (how you show up for months) may live here as a few
-  sentences. Progress, dates, and open loops are SQLite (`insight` /
-  `aim/<area>`), not this file.
+- Lives in `PERSONA_DIR`, in the stable prompt prefix, after the contract
+  and `PERSONA.md`.
+- `self_note` appends one short line. It does not rewrite the file.
+- On history trim, new `Voice:` bits append the same way.
+- On `/new`, distill merges into `SELF.md`. A bland tool session with no
+  Voice does not rewrite the file.
+- Cap 4096 characters. At capacity the tool refuses until distill or you
+  prune.
+- Needs a writable persona directory (`SELF_NOTES_ENABLED`, default on).
 
-**Operator duty:** audit or delete `SELF.md` if the agent drifts.
-Write a tight `PERSONA.md` (examples, no MCP catalog).
+Repo facts (commands, conventions, goals) are memory rows, not this file.
+Audit or delete `SELF.md` if the agent drifts.
 
-## Memory design
+## Memory
 
-Long-horizon planning needs facts that outlive a session. Direction taken
-from Google's Always-On Memory Agent (2026): **no embeddings, no vector DB —
-an LLM writes structured rows into SQLite and a background job consolidates
-them.** At personal-agent scale, structured + FTS5 beats ANN search and stays
-greppable/deletable. Open the file with `sqlite3`.
+Facts that should survive the session live in SQLite. The model writes the
+rows. Nothing promotes them on a timer: a consolidator would spend a
+completion on every boot of a CLI. Auto-save of every turn is off.
 
 ### Store
 
-One SQLite file `$DATA_DIR/george.db` (WAL mode), pure-Go driver:
+One file, `$DATA_DIR/george.db`, WAL, pure-Go driver. Open it with `sqlite3`.
 
 ```sql
 CREATE TABLE memory (
-  id          INTEGER PRIMARY KEY,
-  kind        TEXT NOT NULL,       -- fact | preference | person | episode | insight
-  subject     TEXT NOT NULL,
-  content     TEXT NOT NULL,
-  source      TEXT NOT NULL,       -- chat | consolidation | operator
-  confidence  REAL DEFAULT 1.0,
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL,
-  expires_at  TEXT,
-  superseded_by INTEGER
+  id            INTEGER PRIMARY KEY,
+  kind          TEXT NOT NULL,  -- fact | preference | person | episode | insight
+  subject       TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  source        TEXT NOT NULL,
+  confidence    REAL DEFAULT 1.0,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  expires_at    TEXT,
+  superseded_by INTEGER,
+  consolidated  INTEGER NOT NULL DEFAULT 0
 );
-CREATE VIRTUAL TABLE memory_fts USING fts5(subject, content, content=memory);
+CREATE VIRTUAL TABLE memory_fts USING fts5(subject, content, content='memory', content_rowid='id');
 ```
 
-### Builtin tools (only non-MCP tools)
+`consolidated` is a leftover column. No job sets it.
+
+The coding subjects the tools already describe:
+
+| Subject | What lands there |
+| --- | --- |
+| `pref/<what>` | How you like a change shaped (`preference`) |
+| `cmd/<what>` | The command this repo actually runs (`fact`) |
+| `order/<what>` | Order of steps |
+| `convention/<what>`, `gotcha/<what>` | What the tree does not say in a file you would have read |
+| `goal/<slug>` | A goal for this repo (`insight`); done is `memory_forget` |
+
+`AGENTS.md`, `CONTRIBUTING.md`, and the `Makefile` win. A memory row is what
+the agent learned that is not written there. Memory never writes into the
+repo.
+
+A `scope` column (you versus this repo) and a session id per repo are
+planned and not in the schema yet
+([coding-agent-plan.md](coding-agent-plan.md#memory-you-and-the-repo)).
+Today every row is visible to every `george` that opens this database, and
+the session id is the constant `george`.
+
+### Builtin tools
 
 | Tool | Role |
 | --- | --- |
-| `memory_store` | Atomic `kind` / `subject` / `content`. Months-scale plans: `insight` / `aim/<area>` ([persona.md](persona.md#where-the-horizon-lives)) |
+| `memory_store` | One row: `kind`, `subject`, `content`. Same kind + subject supersedes the live row. |
 | `memory_recall` | FTS5 + recency |
-| `memory_forget` | By id or query — memory must be correctable |
+| `memory_forget` | By id or query |
 
-Auto-save is **off**. Auto-saved hallucinations are worse than no memory. The
-model stores deliberately; the consolidator promotes.
+`web_search` is the other builtin (Brave HTTP). It is off without
+`BRAVE_SEARCH_API_KEY`.
 
-### Consolidation
+### Read path
 
-A timer job (default 30 min, `0` disables) runs a bounded pass with the
-**chat** LLM (same `LLM_*` Completer):
-
-1. Read unconsolidated `episode` rows (batch of 20).
-2. Extract durable `fact`/`preference`/`person`/`insight` rows.
-3. On bad/empty model JSON, bump attempts and retry; quarantine after 3
-   failures. Explicit `[]` marks the batch done.
-
-Builtin backend only (`MEMORY_BACKEND=mcp:…` skips consolidator).
-
-### Read path (hydration)
-
-At session start and on `memory_recall`, hydrate at most ~30 rows: active
-facts/preferences + FTS5 hits for the current message, rendered as a compact
-`[memory]` block.
-
-**Persona precedence is law**: anything in `PERSONA.md` outranks memory;
-contradictions get surfaced, not obeyed.
+On each turn, hydrate at most ~30 rows: active rows plus FTS5 hits for the
+current line, as a `[memory]` block after history so the prefix stays
+cacheable. The block is skipped when memory is off.
 
 ### Why not vectors
 
-- One user, one process: hundreds–thousands of rows, not millions. FTS5 +
-  recency + kind filters is enough and is debuggable.
-- Embeddings add a second model, cache, and dimension migration.
-- Cloud vector stores add network, cost, and privacy surface to the most
-  sensitive data in the system.
-- Escape hatch: schema can grow an `embedding BLOB` later behind the same
-  `memory_recall` interface.
+- One person, one file: hundreds or thousands of rows. FTS5 is enough and
+  you can read the row.
+- Embeddings add a second model and a dimension migration.
+- A cloud vector store puts the most sensitive file on the network.
 
-## Ops surface
+## Ops
 
-**The chat is the console.** A dashboard is a second interface — its own auth,
-its own port (banned here), its own deploy story. Ops live in slash commands
-and the tool trace in the reply bubble. Host-level questions (RAM/VRAM, GPU
-residency) stay one `ssh` away ([deploy-native.md](deploy-native.md#host-signals)).
+The terminal is the console. No port, no dashboard, no `george status`.
 
 | Command / signal | Behavior |
 | --- | --- |
-| `george run` | Daemon (default) |
-| `george status` | Exit 0 if heartbeat fresh (≤ ~60s); JSON doctor on stdout; Docker healthcheck. `george doctor` is an alias. |
+| `george` / `george run` | REPL in this repo until `/quit`, EOF, or SIGINT |
+| `george init` | Write `~/.config/george/` once; skip existing files |
+| `george tools-fetch` | Download the binaries named in `mcp.toml` into `~/.local/share/george/bin` |
+| `george tools-plan` | Print that inventory as JSON; do not download |
 | `george version` | Build ldflags |
-| SIGTERM / Interrupt | Stop channel → drain in-flight turn → close MCP → close DB |
-| Logs | JSON `slog` on stderr (`journalctl` / `docker logs`) |
-| Chat cmds | `/new` `/cancel` `/status` `/tools` `/examples` `/planner` `/perf` `/memstats` `/toolstats` `/tokens` `/auth` `/help` |
-| SIGHUP | Reloads persona (unix) |
-| Multi-bubble | Steer + settle (`COALESCE_SETTLE_MS`, default 2s): Completer cancelled, MCP kept |
-| Spin-up notice | `SPINUP_NOTICE_MS` (default 4s) posts a working line before the first token |
-| Photos | Inbound → vision; outbound `SendPhoto` for image URLs in the reply |
+| SIGINT / SIGTERM | Cancel the run context (the in-flight turn stops with it), close MCP, close the DB |
+| Logs | JSON `slog` on stderr |
 
-Telegram refreshes the `/` menu on every bot start (`setMyCommands`). Headless
-tool OAuth: [auth.md](auth.md).
+REPL commands: `/new` `/cancel` `/status` `/tools` `/perf` `/memstats`
+`/toolstats` `/tokens` `/help` `/brief` `/short` `/off`, plus `/quit`.
+`/cancel` only runs if it is the line being handled. The first Ctrl-C is
+SIGINT, which cancels the process. Bracketed paste and Ctrl-C that cancels
+only the turn are still open
+([coding-agent-plan.md](coding-agent-plan.md#input-on-stdio)).
 
-Dev: `make build|test|lint|run|ci|check`; `make install-hooks` for pre-commit.
+`SPINUP_NOTICE_MS` (default 4s) prints a still-working line before the first
+token. `TOOL_TRACE=compact` prints tool activity on the stream.
 
-No port is opened by the harness, ever.
+Dev: `make build|test|lint|run|ci|check`.
 
 ## Packaging
 
-- Go ≥ 1.26, single module, `CGO_ENABLED=0`, `-trimpath -ldflags="-s -w"`.
-- Targets: `linux/amd64`, `linux/arm64`.
-- Image: multi-stage → `gcr.io/distroless/static-debian12:nonroot` (ca-certs +
-  tzdata, uid 65532, **no shell**). Healthchecks must use exec form
-  (`["CMD","george","status"]`), never `CMD-SHELL`. MCP children must be
-  static binaries too.
-- CI: `go vet`, `golangci-lint`, `go test ./internal/... ./cmd/...` with
-  coverage; on `main`, the badge is pushed to `gh-pages`.
-- Release: `make release` (or `BUMP=minor|major` / `TAG=vX.Y.Z`);
-  `.github/workflows/release.yml` runs GoReleaser on `v*` tags.
-- Images: `.github/workflows/docker.yml` pushes multi-arch Distroless to
-  `shotah/george` (Hub) and `ghcr.io/shotah/george` — `:latest` and
-  `:edge` on `main`, plus semver on `v*` tags. Hub overview syncs from
-  [`dockerhub.md`](dockerhub.md) (PNG banner; root readme is the pitch, not
-  the Hub page).
+- Go 1.26, one module, `CGO_ENABLED=0`.
+- The artifact is the `george` binary. Put it on `PATH`. There is no image.
+- CI: `go vet`, `golangci-lint`, `go test` with coverage. The badge is
+  pushed to `gh-pages` from `main`.
+- Release: `make release` (`BUMP=minor|major` or `TAG=vX.Y.Z`).
+  `.github/workflows/release.yml` runs GoReleaser on `v*` tags, after the
+  live eval workflow.
 
 ## Decisions
 
-Why these stuck (the alternatives are in the same rows):
+1. **Name: george.** Binary `george`. One process, one local model, stdin/stdout.
+2. **One OpenAI-compat client.** Ollama, llama.cpp, and the cloud APIs already speak that shape. A provider registry is a second product.
+3. **Token counting is chars/4**, labeled as an estimate. No tokenizer dependency.
+4. **Memory is builtin SQLite.** `MEMORY_BACKEND=mcp:<name>` is the escape hatch. No vector column. Auto-save off. No consolidator.
+5. **Taste is `SELF.md`.** Repo commands and goals are memory subjects. A scope column is the planned split and is not shipped.
+6. **Four coding servers, `force = true`.** Their schemas stay on the request. GitHub without a token is skipped; `fs` still patches.
+7. **Streaming replies default on.**
+8. **Logs on stderr.** stdout is the reply.
+9. **No listen port and no heartbeat.** Nothing is left running to health-check.
+10. **No sandbox.** `shell__command_run` runs as you, in `--root`. Git is the undo.
+11. **Fail-soft MCP boot.** One missing binary does not exit the process. A bad manifest does.
+12. **The session fold is one completion.** It is still in the code. Whether it stays is gap 9 in [todo.md](todo.md).
 
-1. **Name: george** — the coding assistant. Binary `george`. One process,
-   one local model, stdin/stdout.
-2. **One OpenAI-compat client** — Gemini, ChatGPT, Ollama already speak that
-   shape. A provider registry is multi-agent platform gravity.
-3. **Token counting: chars/4 estimates**, labeled as estimates. No tokenizer dep.
-4. **Memory: builtin SQLite**, `MEMORY_BACKEND=mcp:<name>` escape hatch. No
-   vector DB. Auto-save **off**.
-5. **Horizon state: three layers** — north-stars in `SELF.md`, progress in
-   SQLite, wakes in cron/watch. No `goal` memory kind.
-6. **Streaming replies: on by default** (`STREAM_REPLIES=true`). Cron push stays
-   buffered.
-7. **Channel auth: allowlist only** — empty allowlist fails boot. No pairing.
-8. **Runtime image: distroless/static-debian12:nonroot** — MCP children static too.
-9. **Logs on stderr** — stdout stays clean for the stdio REPL.
-10. **Health is `george status`** (SQLite heartbeat, exit code). No listen port.
-11. **The daily planner is horizon work** — one clock time, full tool loop;
-    `[silent]` on a sick day or vacation. Do not invent a first aim.
-12. **Watches are a cursor + poll** — quiet ticks never call the Completer.
-
-**Rejected:** pairing codes; `parallel_tool_calls` on every Completer request
-(Gemini 400s); embeddings in the hot path; stuffing MCP catalogs or project
-plans into `PERSONA.md` / `SELF.md`.
+**Rejected:** pairing codes; embeddings on the hot path; a tool-shim model; stuffing the MCP catalog into `PERSONA.md`; cron, watches, and a planner; a container as the security boundary.
 
 ## Security
 
-Personal harness, full tool autonomy inside a container. `$DATA_DIR` and
-`PERSONA_DIR` are the crown jewels. No in-process permission framework — the
-container is the sandbox; the allowlist is the gate.
+The agent edits and runs freely inside `GEORGE_ROOT`. `$DATA_DIR` and
+`~/.config/george/env` are the crown jewels. There is no allowlist and no
+approval prompt.
 
-| Actor | What we care about |
+| Risk | What we rely on |
 | --- | --- |
-| Random chat user | Talk to the bot / burn quota |
-| Compromised allowlisted account | Abuse mounted tools as the operator |
-| Malicious or buggy MCP binary | Exfil secrets, escape container |
-| Prompt injection via a tool result | Coerce calls or memory writes |
-| Host / volume attacker | Read `george.db`, `.env`, `/secrets` |
+| A task that asks for a bad command | The contract: no `git push`, `reset --hard`, or `clean` through the shell; no deletes outside the tree; no publishes. `git-mcp` has no push. |
+| Untracked or ignored files (`.env`, build output) | No history to revert to. The contract is the only guard. |
+| Anything outside `--root` | `fs` and `git` refuse a path that escapes the root, including a symlink. `shell` sets the cwd; it is not a jail. |
+| Prompt injection in a file or a tool result | Can still drive any published tool, including `shell__command_run` |
+| A buggy MCP binary | Inherits the process environment unless the manifest sets `env` |
+| Someone who can read your home directory | Can read `george.db` and the env file |
 
-**Controls that ship:** outbound-only (no listen port); allowlist on every
-channel (empty fails boot); secrets in env / read-only mounts; manifest
-membership **is** the grant; Distroless nonroot, no shell; `SELF.md` capped
-~4KB (persona `:ro` disables it); memory inspectable and forgettable; drain
-in-flight turn on SIGTERM.
+**Controls that ship:** no listen port; keys in `~/.config/george/env` (init writes it `0600`); manifest membership is the grant; `SELF.md` capped at 4096 characters; memory rows are readable and forgettable; SIGINT cancels the in-flight turn.
 
-**Residual (accepted):** prompt injection can still drive any mounted tool;
-MCP children inherit process env unless the manifest overrides it; heartbeat
-is liveness not Telegram/LLM health; caps bound context size, not spend.
-Treat `mcp.toml` like a rootkit allowlist. Split containers for separate
-trust domains.
-
-Operator checklist: minimal numeric (or verified) allowlist; `.env` and
-`/data` not world-readable; only the MCP servers this persona needs; persona
-says “confirm before irreversible sends” if you care; rebuild image + MCP
-binaries from known sources.
-
-MCP grant: [mcp.md](mcp.md).
+**Residual (accepted):** the shell can `curl`, `gh`, and `git push`; caps bound context size, not spend. Treat `mcp.toml` like a list of programs you are willing to run as yourself.
 
 ## Related
 
 - [architecture.md](architecture.md) — diagrams and sequences
-- [mcp.md](mcp.md) — tool naming and local REPL
-- [todo.md](todo.md) — work after the fork
+- [coding-agent-plan.md](coding-agent-plan.md) — the cut list and the phases still open
+- [coding-mcp.md](coding-mcp.md) — `fs`, `git`, `shell`, `github`
+- [mcp.md](mcp.md) — tool naming and the host
+- [todo.md](todo.md) — the work list

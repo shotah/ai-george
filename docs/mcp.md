@@ -327,11 +327,11 @@ Or `MCP_ENABLE_FORCE=google__calendar,garmin__sleep`. Human overrides:
 
 ```bash
 # from repo root
-make init          # deploy/persona + deploy/mcp.toml
-# edit deploy/mcp.toml — uncomment / add servers you have binaries for
-# edit .env — LLM_* (Gemini, Ollama, …)
+make init          # ~/.config/george: env, mcp.toml, PERSONA.md, SELF.md
+# edit ~/.config/george/mcp.toml — uncomment / add servers you have binaries for
+# edit ~/.config/george/env — LLM_* (Gemini, Ollama, …)
 
-make run           # CHANNEL=stdio by default
+make run           # same as `george` in this repo
 ```
 
 In the REPL:
@@ -345,14 +345,10 @@ Ask something that needs a tool (“search for …”, “what’s on my calenda
 today”). Watch stderr JSON for `tool call`, `mcp tool name aliased`, or
 `tool call failed` with the suggestion string.
 
-Override mounts:
+Point at another config directory:
 
 ```bash
-# Windows PowerShell example
-$env:CHANNEL="stdio"
-$env:PERSONA_DIR="./deploy/persona"
-$env:MCP_MANIFEST="./deploy/mcp.toml"
-make run
+GEORGE_CONFIG_DIR=/path/to/other/george make run
 ```
 
 MCP servers stay commented until you grant them. Trust `/tools` plus the

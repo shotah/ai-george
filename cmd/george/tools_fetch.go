@@ -3,27 +3,26 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
+	"github.com/shotah/george/internal/config"
 	"github.com/shotah/george/internal/mcp"
 )
 
 // toolsFetchCmd resolves mcp.toml download_* and installs binaries.
 //
-//	george tools-fetch --outdir DIR [--manifest path] [--os linux] [--arch amd64]
+//	george tools-fetch [--outdir DIR] [--manifest path] [--os linux] [--arch amd64]
 //	                   [--cache DIR] [--force] [--prune]
 //
 // Skips tools whose versioned archive + binary are already present. When
 // download_tag=latest, a newer GitHub release changes the archive name and
 // triggers a re-download. Optional GITHUB_TOKEN raises API rate limits.
 func toolsFetchCmd() int {
-	manifest := strings.TrimSpace(os.Getenv("MCP_MANIFEST"))
-	if manifest == "" {
-		manifest = "mcp.toml"
-	}
+	manifest := envOr("MCP_MANIFEST", filepath.Join(config.Dir(), "mcp.toml"))
 	goos, goarch := runtime.GOOS, runtime.GOARCH
-	outdir := ""
+	outdir := config.BinDir()
 	cache := ""
 	force := false
 	prune := false
@@ -74,11 +73,12 @@ func toolsFetchCmd() int {
 			fmt.Fprint(os.Stderr, `george tools-fetch — download + install MCP binaries from mcp.toml
 
 Usage:
-  george tools-fetch --outdir DIR [flags]
+  george tools-fetch [flags]
 
 Flags:
-  --manifest path   MCP manifest (default: MCP_MANIFEST or mcp.toml)
-  --outdir DIR      directory for extracted command binaries (required)
+  --manifest path   MCP manifest (default: MCP_MANIFEST or ~/.config/george/mcp.toml)
+  --outdir DIR      directory for extracted command binaries
+                    (default: ~/.local/share/george/bin, which george puts on PATH)
   --cache DIR       archive cache (default: <outdir>/.download-cache)
   --os name         GOOS for URL placeholders (default: runtime)
   --arch name       GOARCH for URL placeholders (default: runtime)
@@ -97,7 +97,7 @@ Env:
 	}
 
 	if strings.TrimSpace(outdir) == "" {
-		fmt.Fprintln(os.Stderr, "tools-fetch: --outdir is required")
+		fmt.Fprintln(os.Stderr, "tools-fetch: --outdir needs a path")
 		return 2
 	}
 

@@ -36,40 +36,85 @@ The work list is **[docs/todo.md](docs/todo.md)**.
 
 ---
 
-## Hello
+## Get started
 
 You need an OpenAI-compatible model on this machine (Ollama, llama.cpp,
-or an API you already have) and Go to build.
+or an API you already have).
 
 ```bash
 ollama pull qwen3-coder:30b-a3b-q4_K_M
-git clone https://github.com/shotah/george.git && cd george
-make init                      # deploy/persona + deploy/mcp.toml from examples/
-go run ./cmd/george tools-fetch   # fs-mcp, git-mcp, shell-mcp, github-mcp
 ```
 
-Point `--root` in `deploy/mcp.toml` at the repo you want it to work in,
-then:
+Two ways to get a binary: [download a release](https://github.com/shotah/ai-george/releases),
+or clone the repo and build it. Then install it once and put `george` on
+`PATH` (`~/.local/bin` usually is).
+
+### Download and run
+
+Open the [releases page](https://github.com/shotah/ai-george/releases) and
+take the archive for your machine. Names look like
+`george_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows). `checksums.txt`
+is on the same page.
 
 ```bash
-export LLM_BASE_URL=http://127.0.0.1:11434/v1 LLM_API_KEY=ollama \
-       LLM_MODEL=qwen3-coder:30b-a3b-q4_K_M LLM_REASONING_EFFORT=none
-export DATA_DIR=./deploy/data MCP_MANIFEST=./deploy/mcp.toml
-make run
+tar -xzf george_*_linux_amd64.tar.gz   # the archive you downloaded
 ```
+
+That leaves a `george` binary in the current directory. On Windows, unzip
+and use `george.exe` in the install step below.
+
+### Build and run
+
+You need Go.
+
+```bash
+git clone https://github.com/shotah/ai-george.git && cd ai-george
+make build
+```
+
+That leaves `bin/george`.
+
+### Install once
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 755 george "$HOME/.local/bin/george"
+# from a clone: install -m 755 bin/george "$HOME/.local/bin/george"
+george init
+george tools-fetch
+```
+
+`init` writes four files to `~/.config/george/` and skips any that
+already exist:
+
+| File | What it is |
+| --- | --- |
+| `env` | The model and keys (`LLM_*`, `GITHUB_TOKEN`, `BRAVE_SEARCH_API_KEY`). Mode 0600. It starts pointed at local Ollama. |
+| `mcp.toml` | The four MCP servers. |
+| `PERSONA.md` | Your name, voice, and timezone. All comments until you write in it. |
+| `SELF.md` | What george learns about how you like the work done. |
+
+`tools-fetch` downloads `fs-mcp`, `git-mcp`, `shell-mcp`, and
+`github-mcp` into `~/.local/share/george/bin`. george puts that directory
+first on `PATH` for its servers, so your shell doesn't need it. The
+database is `~/.local/share/george/george.db`.
+
+Then `cd` into any repo and run `george`. The root is the git toplevel
+of the directory you started in (or that directory, outside a repo), and
+`mcp.toml` hands it to the servers as `--root ${GEORGE_ROOT}`. Every repo
+gets the same model, persona, database, and tools.
+
+Anything set in your shell wins over `~/.config/george/env`. To use a
+different config directory, set `GEORGE_CONFIG_DIR`. `george help` lists
+every path override.
 
 Send `/status`, then a task: `greet.txt says hi. Change it to hello, then
 run wc -l greet.txt.`
 
-The paths are still container-shaped while the off-Docker step lands.
-After it, config lives in `~/.config/george/`, data in
-`~/.local/share/george/`, and the root is the git toplevel of the
-directory you start in. See
-[Where it lives](docs/coding-agent-plan.md#where-it-lives-no-docker).
-
 ### Drop in a different model
 
-The agent does not care which endpoint you picked. Set these three:
+The agent does not care which endpoint you picked. Change these three in
+`~/.config/george/env`:
 
 | You have | Set |
 | --- | --- |

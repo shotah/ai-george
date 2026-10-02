@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/caarlos0/env/v11"
@@ -26,7 +27,7 @@ var Retired = []string{
 }
 
 // Config is the complete env-driven configuration surface.
-// Secrets and scalars live here; structure (persona, MCP manifest) is mounts.
+// Secrets and scalars live here; structure (persona, MCP manifest) is files in Dir().
 type Config struct {
 	LLMBaseURL string `env:"LLM_BASE_URL,required"`
 	LLMAPIKey  string `env:"LLM_API_KEY,required"`
@@ -36,13 +37,14 @@ type Config struct {
 	// LLMReasoningEffort is sent as reasoning_effort when non-empty (Ollama/Qwen:
 	// "none" disables thinking so max_tokens is not eaten by hidden chain-of-thought).
 	LLMReasoningEffort string `env:"LLM_REASONING_EFFORT"`
-	// LLMSystemFold is how system blocks reach the wire: auto (gemini* → one
-	// leading system message, else the agent layout), one, or many.
+	// LLMSystemFold is how system blocks reach the wire: one (a single
+	// leading system message), or auto/many (the agent layout).
 	LLMSystemFold string `env:"LLM_SYSTEM_FOLD" envDefault:"auto"`
 
-	PersonaDir  string `env:"PERSONA_DIR" envDefault:"/persona"`
-	DataDir     string `env:"DATA_DIR" envDefault:"/data"`
-	MCPManifest string `env:"MCP_MANIFEST" envDefault:"/etc/george/mcp.toml"`
+	// Unset, these default to Dir(), DataHome(), and Dir()/mcp.toml.
+	PersonaDir  string `env:"PERSONA_DIR"`
+	DataDir     string `env:"DATA_DIR"`
+	MCPManifest string `env:"MCP_MANIFEST"`
 
 	HistoryMaxMessages int `env:"HISTORY_MAX_MESSAGES" envDefault:"200"`
 	HistoryMaxTokens   int `env:"HISTORY_MAX_TOKENS" envDefault:"32000"` // estimated (chars/4); older turns fold into Facts/Voice
@@ -101,15 +103,27 @@ type Config struct {
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
 }
 
-// Load parses environment variables into Config and validates it. Returns a
-// descriptive error on any failure.
+// Load reads EnvFile into the environment (the process env wins), parses it
+// into Config, and validates it. Returns a descriptive error on any failure.
 func Load() (*Config, error) {
+	if err := loadEnvFile(); err != nil {
+		return nil, err
+	}
 	if err := CheckRetired(os.LookupEnv); err != nil {
 		return nil, err
 	}
 	var cfg Config
 	if err := env.Parse(&cfg); err != nil {
 		return nil, fmt.Errorf("parse env: %w", err)
+	}
+	if cfg.PersonaDir == "" {
+		cfg.PersonaDir = Dir()
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = DataHome()
+	}
+	if cfg.MCPManifest == "" {
+		cfg.MCPManifest = filepath.Join(Dir(), "mcp.toml")
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err

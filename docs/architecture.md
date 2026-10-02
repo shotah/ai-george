@@ -1,103 +1,131 @@
 # Architecture
 
-george is a single static Go binary — an **AI harness** that hosts one
-persona, one LLM endpoint, and a set of MCP tool processes so the agent can
-**plan on a long horizon**. Scaling is horizontal: one container (or systemd
-unit) per brain. Harness contract (env, loop, memory):
-[design.md](design.md). Hello path: [root readme](../readme.md).
-Pendant, Cab, and gantree stay their own repos. This process does not import them.
+george is a single static Go binary — a CLI coding agent. You run it in a
+repo, it talks on stdin/stdout, and it exits when you quit. One process, one
+LLM endpoint, four MCP children rooted at that repo (`fs`, `git`, `shell`,
+`github`). Hello path: [root readme](../readme.md). What was cut and what is
+still open: [coding-agent-plan.md](coding-agent-plan.md). Tool names:
+[coding-mcp.md](coding-mcp.md). Pendant, Cab, and gantree stay their own
+repos. This process does not import them.
 
-## Container view
+## Process view
 
 ```mermaid
 flowchart LR
-  CH[Telegram / Discord / Slack / pendant mailbox]
+  U[terminal stdin / stdout]
 
-  subgraph Host["host or Distroless container"]
+  subgraph Proc["one george process"]
     K[george]
-    M1[mcp binary A]
-    M2[mcp binary B]
-    K -->|stdio MCP| M1
-    K -->|stdio MCP| M2
+    FS[fs-mcp]
+    GIT[git-mcp]
+    SH[shell-mcp]
+    GH[github-mcp]
+    K -->|stdio MCP| FS
+    K -->|stdio MCP| GIT
+    K -->|stdio MCP| SH
+    K -->|stdio MCP| GH
   end
 
-  K -->|outbound only| CH
+  U <-->|lines| K
   K -->|OpenAI-compat| LLM[one LLM endpoint]
-  K --- P[("PERSONA.md + SELF.md")]
-  K --- MF[("mcp.toml")]
-  K --- D[("data/george.db")]
-  M1 --- S[("secrets / .config")]
+  K --- CFG[("~/.config/george/\nenv, mcp.toml, PERSONA.md, SELF.md")]
+  K --- DB[("~/.local/share/george/george.db")]
+  FS --- ROOT[("GEORGE_ROOT")]
+  GIT --- ROOT
+  SH --- ROOT
 ```
 
-Nothing listens inbound. Health is `george status` (exit code) reading a
-heartbeat row in SQLite — Docker exec form, no shell. Persona is writable when
-self-notes are on (`SELF.md`); `:ro` disables that feature.
+Nothing listens inbound. `cd repo && george` is the whole UX. `GEORGE_ROOT`
+is the git toplevel of the cwd (a `.git` file counts, so worktrees work), or
+the cwd when no repo encloses it. An already-set `GEORGE_ROOT` wins. Manifest
+`args` expand `${VAR}` before the child starts, so `mcp.toml` says
+`--root ${GEORGE_ROOT}`.
 
-Deploy shapes: [deploy-native.md](deploy-native.md) ·
-[deploy-docker.md](deploy-docker.md).
+`george tools-fetch` installs the four binaries under
+`~/.local/share/george/bin`. `george run` puts that directory first on
+`PATH` for its children.
+
+There is no shell sandbox and no approval prompt. `shell__command_run` runs
+as you, in `--root`. Git is the undo. The contract is the only guard on
+untracked files, paths outside the root, and `git` commands typed through
+the shell (`push`, `reset --hard`, `clean`).
+
+## Where it lives
+
+| What | Where |
+| --- | --- |
+| Model and keys (`LLM_*`, `BRAVE_SEARCH_API_KEY`, `GITHUB_TOKEN`) | `~/.config/george/env` |
+| MCP manifest | `~/.config/george/mcp.toml` |
+| `PERSONA.md`, `SELF.md` | `~/.config/george/` |
+| `george.db` (session, memory, `mcp_enable`, budgets) | `~/.local/share/george/george.db` |
+| MCP binaries | `~/.local/share/george/bin` |
+| Root | git toplevel of the cwd |
+
+`GEORGE_CONFIG_DIR` overrides the config directory. Data follows
+`XDG_DATA_HOME` (default `~/.local/share`). `config.Load` reads the env file
+with godotenv before parsing; a variable already in the process environment
+wins. `DATA_DIR`, `PERSONA_DIR`, and `MCP_MANIFEST` override the three paths
+when set. `george init` writes the config directory once and skips files
+that already exist.
+
+Boot fails when a removed assistant variable is set (`CHANNEL`, `TELEGRAM_*`,
+`CRON_*`, `WATCH_*`, and the rest of `config.Retired`). An old env file
+should say so, not quietly do nothing.
 
 ## Package layout
 
 ```text
-cmd/george/          run | init | auth | status | version
+cmd/george/          run | init | tools-plan | tools-fetch | version
 cmd/release/         semver bump → tag → push (dev tooling)
-internal/config/     env parse + fail-fast validation
-internal/channel/    Channel interface; telegram/, discord/, slack/, pendant/, stdio/
+internal/config/     env file + XDG paths + fail-fast validation
+internal/channel/    Channel interface; stdio/ REPL
 internal/provider/   OpenAI-compatible Completer (one implementation)
-internal/mcp/        manifest, spawn, list/call tools, truncate, restart
+internal/mcp/        manifest, spawn, list/call tools, truncate, restart, tools-fetch
 internal/mcpenable/  dynamic tool prefix grants
 internal/agent/      prompt assembly, tool loop, collapse, reply
 internal/session/    bounded history + rolling summary
-internal/memory/     Memory interface, builtin SQLite/FTS5, MCP adapter, consolidator
-internal/persona/    load PERSONA.md + SELF.md
+internal/memory/     Memory interface, builtin SQLite/FTS5, MCP adapter
+internal/persona/    embedded contract + PERSONA.md + SELF.md
 internal/selfnote/   SELF.md tool + distill on /new
 internal/websearch/  builtin web_search (Brave Search HTTP)
-internal/heartbeat/  singleton row for Docker healthcheck
-internal/drain/      in-flight turn wait on SIGTERM
-internal/cron/       scheduled turns → agent → channel push
-internal/watch/      poll MCP fetch tools; wake only on new item ids
-internal/examples/   /examples capability pings
-internal/logfwd/     optional slog → chat
+internal/slash/      REPL command catalog
 ```
 
-One provider implementation is deliberate: Gemini, ChatGPT, and local models all
-speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
-`LLM_API_KEY`.
+One provider implementation is deliberate: Gemini, ChatGPT, and local models
+all speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
+`LLM_API_KEY`. The eval grades one local id,
+`qwen3-coder:30b-a3b-q4_K_M`.
 
-## Process model (goroutines)
+## Process model
 
-One OS process. Concurrent work:
+One OS process. The REPL reads the next line only after the reply is done,
+so a turn is not steered mid-flight.
 
-| Goroutine | Job |
+| Piece | Job |
 | --- | --- |
-| channel poller | Telegram `getUpdates` / Discord Gateway / Slack Socket Mode / pendant mailbox WSS (`cmds` then `allow` on dial) / stdio; allowlist filter |
-| agent handler | per message: assemble → model → tools → reply; follow-ups settle then steer the live turn (Telegram: workers=2 so `/cancel` + barge-in can run) |
-| MCP children | one OS process per manifest server (stdio), supervised by host |
-| heartbeat ticker | upsert `heartbeat` every ~15s |
-| memory consolidator | optional timer (`MEMORY_CONSOLIDATE_MINUTES`; `0` = off) |
-| cron + watch tickers | clock jobs → agent → push; fetch-tool polls → wake only on new ids |
+| stdio REPL | prompt `> `, one line in, one reply out; `/quit` `/exit` `/q` leave; EOF leaves |
+| agent handler | that line: assemble → model → tools → reply |
+| MCP children | one OS process per manifest server that connected (stdio) |
+| signal context | SIGINT / SIGTERM cancels the run context; the in-flight turn stops with it |
 
 ```mermaid
 flowchart TB
   subgraph george["george process"]
-    CH[channel.Run]
+    CH[stdio.Run]
     AG[agent.Handle]
     MCP[mcp.Host]
-    HB[heartbeat.Start]
-    CON[memory.Consolidator]
     CH -->|Handler| AG
     AG -->|Complete| LLM[(provider)]
     AG -->|Call| MCP
     AG -->|Append / Summary| SES[(session SQLite)]
     AG -->|Hydrate / tools| MEM[(memory)]
-    HB --> DB[(george.db)]
-    SES --> DB
+    SES --> DB[(george.db)]
     MEM --> DB
-    CON --> MEM
-    CON --> LLM
-    MCP -->|stdio| C1[mcp child…]
+    MCP -->|stdio| C1[fs / git / shell / github]
   end
 ```
+
+Logs are JSON on stderr so the REPL on stdout stays readable.
 
 ## Boot sequence
 
@@ -107,48 +135,49 @@ sequenceDiagram
   participant Run as george run
   participant Cfg as config
   participant Ses as session
-  participant HB as heartbeat
   participant MCP as mcp.Host
   participant Mem as memory
-  participant Ch as channel
+  participant Ch as stdio
 
   OS->>Run: start
-  Run->>Cfg: Load env (fail-fast)
+  Run->>Cfg: env file, then process env (fail-fast)
+  Run->>Run: GEORGE_ROOT + bin dir on PATH
   Run->>Ses: Open george.db + migrations
   Run->>Ses: WithSummarizer(LLM)
-  Run->>HB: OpenDB + Start ticker
-  Run->>MCP: Start(manifest) — connect all servers or exit 1
+  Run->>MCP: Start(manifest) — each server fail-soft
   alt MEMORY_ENABLED
     Run->>Mem: OpenDB or MCPAdapter
-    opt builtin + consolidate > 0
-      Run->>Mem: Consolidator.Start
-    end
   end
-  Run->>Ch: Run(ctx, drain.Handler(agent.Handle))
-  Note over Ch: blocks until SIGTERM / cancel
+  Run->>Ch: Run(ctx, agent.Handle)
+  Note over Ch: blocks until quit, EOF, or SIGINT
 ```
+
+A missing binary or a missing `GITHUB_TOKEN` skips that server and leaves
+the others up. A bad manifest still exits 1. `fs`, `git`, `shell`, and
+`github` are `force = true` in `deploy/mcp.toml`, so their schemas stay
+published and a turn does not spend a round on `mcp_enable` before an edit.
 
 ## Message / agent loop
 
-One turn is execution. Long-horizon planning is those turns chained across
-memory, cron, watches, and `SELF.md` — same loop, later.
+One turn is one human line. The REPL does not read again until `Handle`
+returns.
 
 ```mermaid
 sequenceDiagram
-  participant U as User
-  participant Ch as channel
+  participant U as terminal
+  participant Ch as stdio
   participant A as agent
   participant M as memory
   participant S as session
   participant L as LLM
   participant T as mcp / memory tools
 
-  U->>Ch: inbound message
+  U->>Ch: one line
   Ch->>A: Handle(ctx, msg)
-  alt /new or /status
-    A->>S: Reset or Stats
+  alt slash command
+    A->>S: reset / stats / catalog
     A-->>Ch: short reply
-  else chat turn
+  else coding turn
     A->>S: Messages + Summary
     A->>M: Hydrate(query, ~30)
     A->>A: assemble system blocks + history + user
@@ -166,8 +195,21 @@ sequenceDiagram
       end
     end
   end
-  Ch-->>U: outbound reply
+  Ch-->>U: stdout
 ```
+
+Slash commands the agent handles: `/new`, `/cancel`, `/status`, `/tools`,
+`/perf`, `/memstats`, `/toolstats`, `/tokens`, `/help`, `/brief`, `/short`,
+`/off`. `/cancel` only lands if it is the line being handled; the REPL does
+not read during a turn, so SIGINT is what stops one that is already running.
+
+The loop keeps the last two tool rounds whole, including a parallel batch.
+Older rounds become a one-line marker in-process. No completion is spent to
+describe a tool pair. A name that does not resolve gets one
+grammar-constrained retry (at most five closest names). A call printed as
+JSON is salvaged and run. When `TOOL_MAX_ITERATIONS` (default 25) is spent,
+tools are withheld and one landing call must answer in text. `/toolstats`
+counts the repairs.
 
 ## MCP tool call (resolve → call → restart)
 
@@ -178,16 +220,16 @@ sequenceDiagram
   participant C as child Conn
 
   A->>H: Call("server__tool", args)
-  H->>H: resolve exact name, else hyphenate prefix (_→-)
+  H->>H: exact name, else hyphenate prefix, else wrong separator, else unique bare name
   alt unknown after resolve
-    H-->>A: error + catalog suggestion (model-facing)
+    H-->>A: error + up to five closest names
   else known
     H->>C: CallTool(originalName, args)
     alt success
       C-->>H: text
       H-->>A: Truncate(text, TOOL_RESULT_MAX_CHARS)
-    else failure
-      H->>H: restartServer (backoff ≤ 4 attempts)
+    else transport death
+      H->>H: restartServer (backoff, ≤ 4 attempts)
       H->>C: CallTool again
       C-->>H: text or error
       H-->>A: result / error string
@@ -195,170 +237,108 @@ sequenceDiagram
   end
 ```
 
-Children are **not** bound to the signal context. On SIGTERM the channel
-stops accepting work, `drain.Gate` waits for the in-flight turn (default 2m),
-then deferred `mcp.Host.Close()` tears down stdio sessions (killing children).
+Wrong-separator repair covers a real prefix joined the wrong way
+(`fs.file_get`, `git_status_get`, `shell-command_run`) and counts as
+`prefix_alias`. A bare name (`file_patch`) or an invented prefix resolves
+only when exactly one published tool has that base name. A real prefix plus
+a wrong tool (`fs__get_file`) is left to the closest-name hint. Argument
+errors and cancel do not restart the child.
 
-Operator details (naming, local REPL, why alias exists): [mcp.md](mcp.md).
+On SIGINT the REPL returns, then deferred `mcp.Host.Close()` tears down the
+stdio sessions.
+
+Operator details (naming, local REPL): [mcp.md](mcp.md).
 
 ## Data on disk
 
-One WAL SQLite file: `$DATA_DIR/george.db`.
+One WAL SQLite file: `$DATA_DIR/george.db` (default
+`~/.local/share/george/george.db`). Open it with `sqlite3`.
 
 | Table | Owner package | Purpose |
 | --- | --- | --- |
 | `session` / `session_message` | `session` | history + rolling `summary` |
-| `memory` / `memory_fts` | `memory` | structured long-term memory |
-| `heartbeat` | `heartbeat` | singleton row for `george status` |
-| cron / watch job rows | `cron` / `watch` | scheduled turns and fetch-tool cursors |
+| `memory` / `memory_fts` | `memory` | structured long-term memory (FTS5, no embeddings) |
+| `mcp_enable` | `mcpenable` | prefix holds for dynamic tools |
+| `mcp_budget` | `mcp` | per-server call caps from the manifest |
 
-`SELF.md` lives in `PERSONA_DIR`, not SQLite. `/new` deletes the session row
-(cascade messages + summary) after `Voice:` merges into `SELF.md` and
-`Facts:` park as a memory episode. Memory rows are untouched.
+`SELF.md` lives in the config directory, not SQLite. `/new` deletes the
+session row (cascade messages + summary) after `Voice:` merges into
+`SELF.md` and `Facts:` park as a memory episode. Other memory rows are
+untouched. A row lands because the model stored it, or because that fold
+parked an episode. There is no consolidator timer.
+
+The session id on stdio is the constant `george`. One conversation for this
+process.
 
 ## Prompt assembly (order)
 
-1. System: `PERSONA.md` then `SELF.md` (+ memory persona-precedence note when memory on)
+1. System: embedded contract, then `PERSONA.md`, then `SELF.md`
 2. System: `[session summary]` (optional)
 3. System: `[mcp prefixes]` when dynamic tools are on
-4. History: user/assistant turns (bounded; trailing cron `— tools:` audit line stripped, footer-only assistant turns omitted)
-5. System: `[memory]` hydration block (optional, ≤ ~30 rows; after history so the prefix stays cacheable)
+4. History: user/assistant turns (bounded; filler words stripped from older user lines; empty assistant turns omitted)
+5. System: `[memory]` hydration (optional, ≤ ~30 rows; after history so the prefix stays cacheable)
 6. System: MCP server health (when tools are wired)
-7. User: current message (typed words / `[photo]` / steers only)
-8. System: `[harness]` location + `[current time]` + `[hours]` + `[aims]` (rating suffix when the ledger has rows) + `[todo]` (the pocket list, oldest first, with row ids) + `[progress]` on the daily planner turn only (week lines on the week-start planner only) + `[loops]` (prompt-only; not session history)
-9. System: follow-up / conversation / `mcp_enable` review / cron tool-first notes as applicable
+7. User: the current line
+8. System: `[harness]` clock (`[current time]`)
+9. System: `mcp_enable` review note when the prefix block is present
 
-Tool schemas are attached on the completion request, not as chat messages.
-Clock used to ride on the user body; that leaked into “raw message text.”
+Tool schemas ride on the completion request, not as chat messages. The
+`[harness]` header on a coding turn names the clock. Hydration and health
+are omitted when those subsystems are off.
 
-Read the completed Completer request (not the inserts): PWA inbound JSON
-in `internal/agent/testdata/pendant/inbound_geo.json` is parsed by
-`pendant.InboundTurn`, run through `Handle`, and pinned as
-`completer_geo.txt` (agent layout) and `completer_geo_gemini_wire.txt`
-(Gemini OpenAI-compat body). GPS-off is `inbound_nogeo.json` /
-`completer_nogeo.txt`. Gate: `TestPendantInbound_CompleterPayload`. Clock
-is frozen at 2026-09-14 12:02 PDT so the dump is stable. Production
-`CRON_TZ` still uses `time.Now`. Memory hydration, `[hours]`, MCP health,
-wait notes, and tool schemas are omitted there so the mouth contract is
-readable; they still append after this prefix when those subsystems are on.
-Hours, aims, and loops need Memory: `completer_horizon_harness.txt`. The
-whole board — memory, cron `[wakes]`, Cab `[surface]`, pendant `[room]`
-(the channel's cached face / backdrop / theme notices, stamped only when
-`pendant__*` is in the catalog), `[last contact]` — is
-`completer_fullboard_harness.txt`. `prompt_wire_test.go` posts the same
-turn through a real `provider.Client` to an `httptest` server and diffs
-the HTTP body against those same goldens, so agent layout and wire cannot
-drift apart. `go test ./internal/agent/ -run Payload -update` rewrites
-goldens; read the diff before trusting it.
+The contract is how the work is done and is what the eval grades.
+`PERSONA.md` is name and voice, empty by default, and george does not write
+it. `SELF.md` is coding taste the agent notes. A heading the harness used to
+own is dropped from an old `PERSONA.md` at load time, without rewriting the
+file.
 
-The `[harness]` header names only the tags present (`location and clock`
-on a memory-off turn; `location, clock, hours, horizon, wakes, surface,
-input, room, and last contact` on the full board, where the Cab Auto
-fixture carries `input: spoken`). A planner turn adds `progress`.
-`[aims]` / `[todo]` / `[loops]` carry `(12d
-ago)` from `updated_at` after the first day, `[loops]` past three weeks add
-`— resolve or memory_forget`, and all three say `(+N more — …)`
-instead of truncating silently. `[todo]` carries no stale cue: a task the
-human has not done is still a task. Rows already
-on `[aims]` / `[todo]` / `[loops]` are dropped from `[memory]` hydration. `[hours]` is skipped (not "unknown")
-when the backend cannot do a live-row lookup (`memory.ErrNotSupported`,
-MCP memory).
+Read the completed Completer request: a stdio line is run through `Handle`
+and pinned as `internal/agent/testdata/stdio/completer.txt`. The clock is
+frozen at 2026-09-14 12:02 PDT. `stdio_payload_test.go` also posts that turn
+through a real `provider.Client` to an `httptest` server. Memory hydration,
+MCP health, and tool schemas are omitted there so the mouth contract stays
+readable; they still append when those subsystems are on.
 
 Gemini's OpenAI-compat layer keeps **one** system instruction. A trailing
 `[harness]` `role=system` after the user is dropped or overwrites the
-persona — Tim never sees NOW/GPS without a tool. `provider.WireMessages`
-folds every system block into one leading system message for `gemini*`
-models: standing blocks (persona, summary, hydration) first so identity
-leads and the stable prefix stays cacheable, this-turn blocks (`[harness]`,
-wait note) last for recency. OpenAI/Ollama keep the trailing system (prefix
-cache). `LLM_SYSTEM_FOLD=auto|one|many` overrides the model-name guess —
-`one` for a local chat template that renders system only at position 0.
+persona. `provider.WireMessages` folds every system block into one leading
+system message for `gemini*` models: standing blocks first, this-turn blocks
+last. OpenAI and Ollama keep the trailing system. `LLM_SYSTEM_FOLD=auto|one|many`
+overrides the model-name guess. `auto` folds only for `gemini*`. Whether
+this model's chat template renders a system block after position 0 is still
+unchecked; see [todo.md](todo.md) gap 5.
 
-## External dependencies (import over write)
+## External dependencies
 
 | Concern | Library | Why |
 | --- | --- | --- |
 | MCP client | `github.com/modelcontextprotocol/go-sdk` | Official SDK; stdio transport, schema handling |
 | SQLite | `modernc.org/sqlite` | Pure Go (no CGO), FTS5 works, one file DB |
-| Telegram | `github.com/go-telegram/bot` | Zero-dep, maintained, long-poll native |
 | LLM client | `github.com/openai/openai-go/v3` | Official; custom `base_url` covers Gemini, xAI, Ollama |
 | Env config | `github.com/caarlos0/env/v11` | Struct tags → env, tiny |
+| Env file | `github.com/joho/godotenv` | `~/.config/george/env`; does not override the process env |
+| XDG paths | `github.com/adrg/xdg` | Config dir and data dir |
 | MCP manifest | `github.com/pelletier/go-toml/v2` | Minimal TOML for `mcp.toml` |
-| Logging | stdlib `log/slog` | JSON to **stderr** (stdio REPL stays clean) |
-
-Why each pick stuck: [design.md](design.md#decisions).
-
-## Cron push
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant A as agent
-  participant C as cron
-  participant T as Telegram
-
-  U->>A: "remind me at 5pm to…"
-  A->>C: cron_schedule(...)
-  Note over C: SQLite job row + next_run
-  C->>C: ticker: job due
-  C->>A: Handle(synthetic prompt)
-  A->>A: tools / MCP as usual
-  A->>T: push SendMessage (no inbound update)
-  T-->>U: reminder / digest / daily planner (or skip on [silent])
-```
-
-Outbound push needs a channel API beyond “reply to the update that invoked
-Handle” — Telegram chat/user id is stored with the job from the scheduling turn.
-
-## Event watches
-
-Poller is code, not the agent. Quiet ticks never call the Completer.
-
-```mermaid
-sequenceDiagram
-  participant T as ticker
-  participant H as MCP Host
-  participant W as watch
-  participant A as agent
-  participant C as channel
-
-  T->>W: due rows
-  W->>H: Call(tool, args)
-  H-->>W: items JSON
-  alt first poll or no new ids
-    W->>W: seed / update cursor
-  else new ids
-    W->>A: Handle([watch] items)
-    A-->>W: reply or [silent]
-    opt not silent
-      W->>C: Push
-    end
-  end
-```
-
-A quiet watch polls a tool and does not call the model.
+| Logging | stdlib `log/slog` | JSON to **stderr** |
 
 ## Streaming replies
 
-Default on: `STREAM_REPLIES=true`. Channel attaches a `ReplyWriter`; agent uses
-`provider.CompleteStream` when available.
+Default on: `STREAM_REPLIES=true`. Stdio attaches a `ReplyWriter` and the
+agent uses `provider.CompleteStream` when the completer supports it. Tokens
+print as they arrive. Tool-call chunks skip live text updates. Finish runs
+before `sessions.Append`, so a complete draft is not held back while the
+SQLite fold runs.
 
-```mermaid
-sequenceDiagram
-  participant L as LLM stream
-  participant A as agent
-  participant T as Telegram
+`SHOW_THINKING` prints chain-of-thought on the stream. `TOOL_TRACE` prints
+tool activity (`compact` by default). `SPINUP_NOTICE_MS` prints a still-working
+line when a turn has produced no model output yet.
 
-  A->>T: SendMessage("…")
-  loop token chunks
-    L-->>A: delta
-    A->>T: editMessageText (throttled)
-  end
-  A->>T: Finish (final text; overflow as extra messages)
-```
+## Still the old shape
 
-Finish is the last **visible** step. `sessions.Append` and wait-cron
-`AfterReply` run after it so a complete draft is not stuck italic while
-SQLite fold or cron work happens. Tool-call chunks skip live text
-updates; cron push stays buffered.
+These are in this process today. The plan moves them; the diagrams above
+describe the code, not that later cut.
 
+- History trim still spends one completion (`session.LLMSummarizer`) to fold dropped turns into `Facts:` / `Voice:`.
+- Memory rows have no repo-versus-you scope column. Hydration is one table.
+- Stdio is a line scanner (a line may be up to 1MB). A paste is not yet one bracketed message, and the first Ctrl-C cancels the process.
+- `[harness]` is the clock. A workspace line (root and branch) is not stamped.

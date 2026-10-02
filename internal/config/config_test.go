@@ -2,22 +2,33 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shotah/george/internal/config"
 )
 
-// setRequiredLLM sets the LLM_* trio and clears every retired name, so a
-// developer shell that still exports one cannot fail an unrelated test.
-func setRequiredLLM(t *testing.T) {
+// unsetEnv clears names for the test; t.Setenv restores them afterwards,
+// including any value an env file load set in between.
+func unsetEnv(t *testing.T, names ...string) {
 	t.Helper()
-	for _, name := range config.Retired {
+	for _, name := range names {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// setRequiredLLM sets the LLM_* trio, points the config dir at an empty temp
+// dir, and clears every retired name and path override, so a developer shell
+// or a real ~/.config/george/env cannot fail an unrelated test.
+func setRequiredLLM(t *testing.T) {
+	t.Helper()
+	unsetEnv(t, config.Retired...)
+	unsetEnv(t, "PERSONA_DIR", "DATA_DIR", "MCP_MANIFEST")
+	t.Setenv("GEORGE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LLM_BASE_URL", "https://example.com/v1")
 	t.Setenv("LLM_API_KEY", "test-key")
 	t.Setenv("LLM_MODEL", "test-model")
@@ -31,14 +42,14 @@ func TestLoad_Defaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.PersonaDir != "/persona" {
-		t.Errorf("PersonaDir = %q, want /persona", cfg.PersonaDir)
+	if cfg.PersonaDir != config.Dir() {
+		t.Errorf("PersonaDir = %q, want %q", cfg.PersonaDir, config.Dir())
 	}
-	if cfg.DataDir != "/data" {
-		t.Errorf("DataDir = %q, want /data", cfg.DataDir)
+	if cfg.DataDir != config.DataHome() || filepath.Base(cfg.DataDir) != "george" {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, config.DataHome())
 	}
-	if cfg.MCPManifest != "/etc/george/mcp.toml" {
-		t.Errorf("MCPManifest = %q, want /etc/george/mcp.toml", cfg.MCPManifest)
+	if want := filepath.Join(config.Dir(), "mcp.toml"); cfg.MCPManifest != want {
+		t.Errorf("MCPManifest = %q, want %q", cfg.MCPManifest, want)
 	}
 	if cfg.LLMMaxTokens != 4096 {
 		t.Errorf("LLMMaxTokens = %d, want 4096", cfg.LLMMaxTokens)
@@ -213,5 +224,59 @@ func TestCheckRetired(t *testing.T) {
 	slack := func(name string) (string, bool) { return "x", name == "SLACK_TOKEN" }
 	if err := config.CheckRetired(slack); err != nil {
 		t.Fatalf("a name george never read must pass: %v", err)
+	}
+}
+
+func writeEnvFile(t *testing.T, body string) {
+	t.Helper()
+	if err := os.WriteFile(config.EnvFile(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoad_EnvFileFillsUnset(t *testing.T) {
+	setRequiredLLM(t)
+	unsetEnv(t, "LLM_MODEL", "DATA_DIR")
+	writeEnvFile(t, "LLM_MODEL=qwen3-coder:30b-a3b-q4_K_M\nDATA_DIR=/from/file\n")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLMModel != "qwen3-coder:30b-a3b-q4_K_M" || cfg.DataDir != "/from/file" {
+		t.Fatalf("model %q data %q, want the env file's values", cfg.LLMModel, cfg.DataDir)
+	}
+}
+
+func TestLoad_ProcessEnvBeatsEnvFile(t *testing.T) {
+	setRequiredLLM(t)
+	writeEnvFile(t, "LLM_MODEL=from-file\n")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLMModel != "test-model" {
+		t.Fatalf("LLMModel = %q, want the process env's test-model", cfg.LLMModel)
+	}
+}
+
+func TestLoad_RetiredInEnvFileFails(t *testing.T) {
+	setRequiredLLM(t)
+	writeEnvFile(t, "CHANNEL=stdio\n")
+
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "CHANNEL") {
+		t.Fatalf("err = %v, want CHANNEL refused", err)
+	}
+}
+
+func TestLoad_BadEnvFileNamesIt(t *testing.T) {
+	setRequiredLLM(t)
+	writeEnvFile(t, "LLM_MODEL='unterminated\n")
+
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), config.EnvFile()) {
+		t.Fatalf("err = %v, want the env file path", err)
 	}
 }

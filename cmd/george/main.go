@@ -50,14 +50,19 @@ func printHelp() {
 
 Usage:
   george [run]        Start a session in this repo (default)
-  george init         Scaffold persona + mcp.toml (+ .env.example) from embedded templates
+  george init         Write env, mcp.toml, and persona to ~/.config/george (skips existing)
   george tools-plan   JSON MCP binary inventory from mcp.toml
   george tools-fetch  Download + install MCP binaries declared in mcp.toml
   george version      Print build info
   george help         Show this help
 
-init / tools-* env (optional):
-  PERSONA_DIR    default deploy/persona
-  MCP_MANIFEST   default deploy/mcp.toml (tools-* default: mcp.toml)
+Paths (env overrides, optional):
+  GEORGE_CONFIG_DIR  default ~/.config/george (env, mcp.toml, PERSONA.md, SELF.md)
+  DATA_DIR           default ~/.local/share/george (george.db)
+  MCP_MANIFEST       default $GEORGE_CONFIG_DIR/mcp.toml
+  PERSONA_DIR        default $GEORGE_CONFIG_DIR
+  GEORGE_ROOT        default git toplevel of the cwd
+MCP binaries from tools-fetch go to ~/.local/share/george/bin, which george
+puts first on PATH. The process env wins over ~/.config/george/env.
 `)
 }

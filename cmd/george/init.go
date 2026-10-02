@@ -9,17 +9,19 @@ import (
 	"strings"
 
 	"github.com/shotah/george/examples"
+	"github.com/shotah/george/internal/config"
 )
 
-// initCmd scaffolds persona + mcp.toml (+ .env.example) from embedded templates.
+// initCmd scaffolds env, mcp.toml, and the persona files in config.Dir()
+// from embedded templates.
 //
-//	PERSONA_DIR   default deploy/persona (local) — use /persona in containers
-//	MCP_MANIFEST  default deploy/mcp.toml
+//	PERSONA_DIR   default config.Dir()
+//	MCP_MANIFEST  default config.Dir()/mcp.toml
 //
 // Existing files are skipped. Fail-fast if a target directory is not writable.
 func initCmd() int {
-	personaDir := envOr("PERSONA_DIR", "deploy/persona")
-	manifestPath := envOr("MCP_MANIFEST", "deploy/mcp.toml")
+	personaDir := envOr("PERSONA_DIR", config.Dir())
+	manifestPath := envOr("MCP_MANIFEST", filepath.Join(config.Dir(), "mcp.toml"))
 
 	if err := ensureWritableDir(personaDir); err != nil {
 		fmt.Fprintf(os.Stderr, "init: persona dir: %v\n", err)
@@ -48,7 +50,7 @@ func initCmd() int {
 		}
 		destName := strings.TrimSuffix(name, ".example.md") + ".md"
 		dest := filepath.Join(personaDir, destName)
-		n, err := copyEmbeddedIfMissing(path.Join("persona", name), dest)
+		n, err := copyEmbeddedIfMissing(path.Join("persona", name), dest, 0o644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "init: %v\n", err)
 			return 1
@@ -62,7 +64,7 @@ func initCmd() int {
 		}
 	}
 
-	n, err := copyEmbeddedIfMissing("mcp.toml.example", manifestPath)
+	n, err := copyEmbeddedIfMissing("mcp.toml.example", manifestPath, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init: %v\n", err)
 		return 1
@@ -75,8 +77,8 @@ func initCmd() int {
 		fmt.Fprintf(os.Stderr, "skip  %s (exists)\n", manifestPath)
 	}
 
-	envDest := ".env.example"
-	n, err = copyEmbeddedIfMissing("env.example", envDest)
+	envDest := config.EnvFile()
+	n, err = copyEmbeddedIfMissing("env.example", envDest, 0o600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init: %v\n", err)
 		return 1
@@ -90,7 +92,7 @@ func initCmd() int {
 	}
 
 	fmt.Fprintf(os.Stderr, "init done: wrote=%d skipped=%d\n", wrote, skipped)
-	fmt.Fprintf(os.Stderr, "next: copy .env.example → .env, edit secrets, mount %s + %s\n", personaDir, manifestPath)
+	fmt.Fprintf(os.Stderr, "next: set LLM_* in %s, then run george tools-fetch\n", envDest)
 	return 0
 }
 
@@ -113,7 +115,7 @@ func ensureWritableDir(dir string) error {
 	return nil
 }
 
-func copyEmbeddedIfMissing(src, dest string) (wrote bool, err error) {
+func copyEmbeddedIfMissing(src, dest string, mode os.FileMode) (wrote bool, err error) {
 	if _, err := os.Stat(dest); err == nil {
 		return false, nil
 	} else if !os.IsNotExist(err) {
@@ -126,7 +128,7 @@ func copyEmbeddedIfMissing(src, dest string) (wrote bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
+	if err := os.WriteFile(dest, data, mode); err != nil {
 		return false, fmt.Errorf("write %s: %w", dest, err)
 	}
 	return true, nil

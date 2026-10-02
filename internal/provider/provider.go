@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -50,15 +51,7 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments string // JSON object
-	// Raw is the original tool_call JSON from the provider response.
-	// Gemini 3 OpenAI-compat requires echoing extra_content.google.thought_signature
-	// on subsequent turns; when Raw is set we send it verbatim via param.Override.
-	Raw json.RawMessage
 }
-
-// skipThoughtSignature is Google's documented escape hatch when a signature
-// was not preserved (e.g. streaming assembly). Prefer echoing Raw when available.
-const skipThoughtSignature = "skip_thought_signature_validator"
 
 // Request is one chat completion call.
 type Request struct {
@@ -132,7 +125,7 @@ func (c *Client) WithReasoningEffort(effort string) *Client {
 }
 
 // WithSystemFold sets LLM_SYSTEM_FOLD (FoldAuto|FoldOne|FoldMany). Empty is
-// FoldAuto: gemini* models get one leading system message. Returns c.
+// FoldAuto, which keeps the agent layout. Returns c.
 func (c *Client) WithSystemFold(mode string) *Client {
 	c.systemFold = strings.ToLower(strings.TrimSpace(mode))
 	return c
@@ -149,7 +142,7 @@ func (c *Client) buildParams(req Request) (openai.ChatCompletionNewParams, error
 	if c.reasoningEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(c.reasoningEffort)
 	}
-	for _, m := range WireMessagesMode(c.systemFold, c.model, req.Messages) {
+	for _, m := range WireMessagesMode(c.systemFold, req.Messages) {
 		msg, err := toParam(m)
 		if err != nil {
 			return params, err
@@ -206,7 +199,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Result, error) {
 
 	resp, err := c.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("provider: chat completion: %w", apiErrorWithBody(err))
+		return nil, fmt.Errorf("provider: chat completion: %w", c.modelNotFound(apiErrorWithBody(err)))
 	}
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("provider: empty choices in response")
@@ -225,15 +218,11 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Result, error) {
 	for _, tc := range msg.ToolCalls {
 		switch v := tc.AsAny().(type) {
 		case openai.ChatCompletionMessageFunctionToolCall:
-			call := ToolCall{
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
 				ID:        v.ID,
 				Name:      v.Function.Name,
 				Arguments: v.Function.Arguments,
-			}
-			if raw := strings.TrimSpace(v.RawJSON()); raw != "" {
-				call.Raw = json.RawMessage(raw)
-			}
-			out.ToolCalls = append(out.ToolCalls, call)
+			})
 		}
 	}
 	// Under a response_format grammar Ollama leaves tool_calls empty, so the call
@@ -258,8 +247,9 @@ const apiErrorBodyMax = 800
 
 // apiErrorWithBody re-attaches the response body to an SDK error whose
 // message lost it. openai-go lifts only the top-level "error" object into
-// the message; Gemini's compat layer answers a 400 with a JSON *array*, so
-// the SDK string ends at `400 Bad Request` and the reason is gone. The body
+// the message; when a compat layer answers a 400 with a JSON *array*, or
+// with a top-level "message", the SDK string ends at `400 Bad Request` and
+// the reason is gone. The body
 // is still buffered on the response — read it back, clipped, so the next
 // 400 explains itself in the log instead of needing a live probe.
 func apiErrorWithBody(err error) error {
@@ -273,6 +263,17 @@ func apiErrorWithBody(err error) error {
 		return err
 	}
 	return &apiBodyError{err: err, body: body}
+}
+
+// modelNotFound names the model and the env var to fix when the server 404s
+// on it. A 404 that doesn't mention the model (a wrong base URL path) is
+// left as it is.
+func (c *Client) modelNotFound(err error) error {
+	var aerr *openai.Error
+	if !errors.As(err, &aerr) || aerr.StatusCode != http.StatusNotFound || !strings.Contains(err.Error(), c.model) {
+		return err
+	}
+	return fmt.Errorf("model %q was not found at LLM_BASE_URL; set LLM_MODEL to one the server has (Ollama: ollama list): %w", c.model, err)
 }
 
 // apiBodyError is an SDK error plus the response body it dropped. Unwrap
@@ -340,16 +341,11 @@ func toParam(m Message) (openai.ChatCompletionMessageParamUnion, error) {
 	}
 }
 
-// toolCallParam rebuilds an OpenAI tool_call param, preserving Gemini thought
-// signatures when Raw is present.
+// toolCallParam rebuilds an OpenAI tool_call param from id, name, and args.
 func toolCallParam(tc ToolCall) (openai.ChatCompletionMessageFunctionToolCallParam, error) {
-	raw := tc.Raw
-	if len(raw) == 0 {
-		var err error
-		raw, err = synthesizeToolCallRaw(tc)
-		if err != nil {
-			return openai.ChatCompletionMessageFunctionToolCallParam{}, err
-		}
+	raw, err := toolCallJSON(tc)
+	if err != nil {
+		return openai.ChatCompletionMessageFunctionToolCallParam{}, err
 	}
 	return param.Override[openai.ChatCompletionMessageFunctionToolCallParam](raw), nil
 }
@@ -373,24 +369,17 @@ func extractThinkingJSON(raw string) string {
 	return ""
 }
 
-func synthesizeToolCallRaw(tc ToolCall) (json.RawMessage, error) {
+func toolCallJSON(tc ToolCall) (json.RawMessage, error) {
 	args := tc.Arguments
 	if strings.TrimSpace(args) == "" {
 		args = "{}"
 	}
-	// Include Google's skip token so Gemini 3 tool loops don't 400 when the
-	// original signature wasn't captured (streaming path).
 	payload := map[string]any{
 		"id":   tc.ID,
 		"type": "function",
 		"function": map[string]any{
 			"name":      tc.Name,
 			"arguments": args,
-		},
-		"extra_content": map[string]any{
-			"google": map[string]any{
-				"thought_signature": skipThoughtSignature,
-			},
 		},
 	}
 	b, err := json.Marshal(payload)

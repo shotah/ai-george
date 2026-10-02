@@ -40,6 +40,7 @@ func TestNewLogger_Levels(t *testing.T) {
 }
 
 func TestRun_BadConfig(t *testing.T) {
+	t.Setenv("GEORGE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LLM_BASE_URL", "")
 	t.Setenv("LLM_API_KEY", "")
 	t.Setenv("LLM_MODEL", "")

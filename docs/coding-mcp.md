@@ -111,19 +111,19 @@ Binaries on `PATH`. `fs`, `git`, and `shell` share `--root`. `github` does not.
 [[server]]
 name  = "fs"
 command = "fs-mcp"
-args  = ["--root", "/workspace", "--tool-tier", "core"]
+args  = ["--root", "${GEORGE_ROOT}", "--tool-tier", "core"]
 force = true
 
 [[server]]
 name  = "git"
 command = "git-mcp"
-args  = ["--root", "/workspace", "--tool-tier", "core"]
+args  = ["--root", "${GEORGE_ROOT}", "--tool-tier", "core"]
 force = true
 
 [[server]]
 name  = "shell"
 command = "shell-mcp"
-args  = ["--root", "/workspace"]
+args  = ["--root", "${GEORGE_ROOT}"]
 force = true
 
 [[server]]
@@ -154,7 +154,7 @@ Each box is a new repo, or a change in this repo that only grants one. Package T
 - [x] `fs-mcp`: the five core tools, `--root`, `--tool-tier core`, name tests. Checkout: `repos/fs-mcp`.
 - [x] `git-mcp`: the five core tools, repo-only, no remotes, name tests. Checkout: `repos/git-mcp`.
 - [x] `shell-mcp`: `command_run` only, timeout, exit code, tail of output. Checkout: `repos/shell-mcp`.
-- [x] Grants in `examples/mcp.toml.example`, `deploy/mcp.toml`, and `internal/agent/testdata/eval/mcp.toml`, including `github`. Each `download_tag` is `latest`.
+- [x] Grants in `examples/mcp.toml.example` (what `george init` writes) and `internal/agent/testdata/eval/mcp.toml`, including `github`. Each `download_tag` is `latest`.
 - [x] One live eval fixture on the pinned model: `fs__file_get`, then `fs__file_patch`, then `shell__command_run`. Fixture `edit_then_check`. Every run passes, in that order. A unit test that only pastes the name does not count.
 - [x] Add `git__status_get` to that fixture after `git-mcp` is granted.
 - [x] `github-mcp`: ten tools, `GITHUB_TOKEN`, name tests. Checkout: `repos/github-mcp`. Granted with `force = true`.

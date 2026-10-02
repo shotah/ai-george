@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/shotah/george/internal/provider"
@@ -82,7 +81,7 @@ func collapseOldToolResults(messages []provider.Message) []provider.Message {
 
 // collapseOldToolCallArgs stubs argument JSON on assistant tool calls whose
 // results were collapsed. Copies the ToolCalls slice so the caller's messages
-// are not mutated. Gemini thought_signature in Raw is kept; only arguments shrink.
+// are not mutated.
 func collapseOldToolCallArgs(messages []provider.Message, collapsedIDs map[string]bool) {
 	for i, m := range messages {
 		if m.Role != provider.RoleAssistant || len(m.ToolCalls) == 0 {
@@ -106,23 +105,6 @@ func collapseOldToolCallArgs(messages []provider.Message, collapsedIDs map[strin
 
 func stubToolCallArgs(tc provider.ToolCall) provider.ToolCall {
 	tc.Arguments = collapsedToolArgs
-	if len(tc.Raw) == 0 {
-		return tc
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(tc.Raw, &payload); err != nil {
-		tc.Raw = nil
-		return tc
-	}
-	if fn, ok := payload["function"].(map[string]any); ok {
-		fn["arguments"] = collapsedToolArgs
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		tc.Raw = nil
-		return tc
-	}
-	tc.Raw = b
 	return tc
 }
 

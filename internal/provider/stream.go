@@ -22,8 +22,8 @@ type toolAcc struct {
 
 // streamToolBuf merges streaming tool-call deltas.
 //
-// Gemini's OpenAI-compat endpoint often emits parallel tool calls all with
-// index=0 (or omits index). OpenAI clients that key only on index then mash
+// Some OpenAI-compat endpoints emit parallel tool calls all with index=0
+// (or omit index). OpenAI clients that key only on index then mash
 // names/args together. We key on tool call id when present, and treat a new
 // id at the same index as a new call.
 type streamToolBuf struct {
@@ -48,7 +48,7 @@ func (b *streamToolBuf) accFor(index int, id string) *toolAcc {
 			return acc
 		}
 		// New id at an index that already has a different call → parallel call
-		// with a reused/missing index (Gemini).
+		// with a reused/missing index.
 		if cur, ok := b.byIndex[index]; ok && cur.id != "" && cur.id != id {
 			acc := &toolAcc{id: id}
 			b.byID[id] = acc
@@ -176,7 +176,7 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onProgress fun
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return nil, fmt.Errorf("provider: chat stream: %w", apiErrorWithBody(err))
+		return nil, fmt.Errorf("provider: chat stream: %w", c.modelNotFound(apiErrorWithBody(err)))
 	}
 
 	out := &Result{
@@ -191,16 +191,10 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onProgress fun
 		if acc == nil || (acc.name == "" && acc.id == "") {
 			continue
 		}
-		call := ToolCall{ID: acc.id, Name: acc.name, Arguments: acc.args}
-		// Streaming deltas don't carry Gemini thought_signature; synthesize
-		// with Google's skip token so the follow-up turn doesn't 400.
-		if raw, err := synthesizeToolCallRaw(call); err == nil {
-			call.Raw = raw
-		}
-		out.ToolCalls = append(out.ToolCalls, call)
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: acc.args})
 	}
 	// Thinking-only is valid for Qwen/Ollama when max_tokens is spent on CoT;
-	// callers (agent + Telegram stream) can finish without a hard error.
+	// callers (agent + stdio stream) can finish without a hard error.
 	if out.Content == "" && len(out.ToolCalls) == 0 && out.Thinking == "" {
 		return nil, fmt.Errorf("%w (finish_reason=%q)", ErrEmptyContent, finishReason)
 	}

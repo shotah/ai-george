@@ -6,10 +6,8 @@ BIN_DIR       := bin
 COVERAGE      := coverage.out
 COVERAGE_HTML := coverage.html
 
-# Static binary by default (matches container contract).
+# Static binary by default.
 export CGO_ENABLED ?= 0
-
-PERSONA_DIR ?= ./deploy/persona
 
 ifeq ($(OS),Windows_NT)
 	BINARY    := $(BIN_DIR)/george.exe
@@ -18,7 +16,6 @@ ifeq ($(OS),Windows_NT)
 	MKDIR_BIN  = if not exist "$(BIN_DIR)" mkdir "$(BIN_DIR)"
 	RM_BIN     = if exist "$(BIN_DIR)" rmdir /s /q "$(BIN_DIR)"
 	RM_COV     = if exist "$(COVERAGE)" del /q "$(COVERAGE)" & if exist "$(COVERAGE_HTML)" del /q "$(COVERAGE_HTML)"
-	RUN_ENV    = set "PERSONA_DIR=$(PERSONA_DIR)"&&
 else
 	BINARY    := $(BIN_DIR)/george
 	NULL      := /dev/null
@@ -26,7 +23,6 @@ else
 	MKDIR_BIN  = mkdir -p "$(BIN_DIR)"
 	RM_BIN     = rm -rf "$(BIN_DIR)"
 	RM_COV     = rm -f "$(COVERAGE)" "$(COVERAGE_HTML)"
-	RUN_ENV    = PERSONA_DIR="$(PERSONA_DIR)"
 endif
 
 # Build-time version stamp (git describe). Release tags are tracked in ./VERSION.
@@ -52,8 +48,8 @@ help: ## Show available targets
 	@echo.
 	@echo george targets:
 	@echo   make build          Build george into ./bin
-	@echo   make run            Run the stdio REPL (override: PERSONA_DIR=)
-	@echo   make init           Scaffold deploy/persona + deploy/mcp.toml via george init
+	@echo   make run            Run the stdio REPL in this repo (reads ~/.config/george)
+	@echo   make init           Write ~/.config/george via george init (skips existing)
 	@echo   make test           Run all tests
 	@echo   make test-verbose   Run tests with -v
 	@echo   make race           Race detector (needs CGO)
@@ -66,8 +62,6 @@ help: ## Show available targets
 	@echo   make tidy           go mod tidy
 	@echo   make check          Autofix, lint, and test (matches pre-commit)
 	@echo   make ci             tidy fmt vet lint test build
-	@echo   make docker-build   Build image george:local (Hub: shotah/george)
-	@echo   make docker-stdio   Interactive stdio via compose
 	@echo   make version        Show VERSION file + next tag (dry-run)
 	@echo   make release        Bump tag + latest, update VERSION, push (BUMP=patch^|minor^|major)
 	@echo   make install-hooks  Install git pre-commit (autofix + lint + test)
@@ -85,11 +79,11 @@ build: ## Build george into ./bin
 	@echo built $(BINARY)
 
 .PHONY: run
-run: ## Run the george stdio REPL
-	$(RUN_ENV) go run $(CMD) run
+run: ## Run the george stdio REPL in this repo
+	go run $(CMD) run
 
 .PHONY: init
-init: ## Scaffold deploy/ mounts from embedded examples (george init)
+init: ## Write ~/.config/george from embedded examples (george init)
 	go run $(CMD) init
 
 .PHONY: test
@@ -168,18 +162,6 @@ tools: ## Install goimports-reviser + golangci-lint v2 into $$GOBIN
 	GOTOOLCHAIN=local CGO_ENABLED=0 go install github.com/incu6us/goimports-reviser/v3@latest
 	GOTOOLCHAIN=local CGO_ENABLED=0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 	@echo Installed to $(GOBIN_DIR). make fmt / the pre-commit hook prepend that dir to PATH.
-
-.PHONY: docker-build
-docker-build: ## Build the container image (george:local)
-	docker build \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg COMMIT=$(COMMIT) \
-		--build-arg DATE=$(DATE) \
-		-t george:local .
-
-.PHONY: docker-stdio
-docker-stdio: ## Interactive stdio REPL via compose
-	docker compose run --rm -it george
 
 .PHONY: version
 version: ## Show VERSION file and latest git tag / next patch

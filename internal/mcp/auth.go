@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// ExpandAuthArgs replaces $VAR and ${VAR} in auth args from the process env.
-// Unset variables expand to empty strings.
+// ExpandAuthArgs replaces $VAR and ${VAR} in server and auth args from the
+// process env. Unset variables expand to empty strings.
 func ExpandAuthArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil

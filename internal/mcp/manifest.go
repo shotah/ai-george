@@ -48,8 +48,7 @@ type ServerSpec struct {
 	AuthArgs    []string `toml:"auth_args"`
 
 	// DownloadURL is an optional HTTP(S) URL of a binary archive for
-	// `george tools-fetch` (native deploy + Docker bake). Ignored by the
-	// runtime host. Source-agnostic (GitHub, GitLab, S3, …).
+	// `george tools-fetch`. Ignored by the runtime host. Source-agnostic (GitHub, GitLab, S3, …).
 	// Placeholders: {os} {arch}; with DownloadTag: {tag} {version}.
 	DownloadURL string `toml:"download_url"`
 	// DownloadTag pins a release tag once (e.g. "v0.0.2") for {tag}/{version}

@@ -341,7 +341,34 @@ func (h *Host) resolve(toolName string) (*Tool, string, bool) {
 			return tool, alt, true
 		}
 	}
+	if tool, alt, ok := h.resolveSeparatorLocked(toolName); ok {
+		return tool, alt, true
+	}
 	return h.resolveByBaseNameLocked(toolName)
+}
+
+// resolveSeparatorLocked repairs a real server prefix joined to a real tool
+// by the wrong separator (fs.file_get, git_status_get, shell-command_run).
+// The longest matching prefix wins. Callers hold h.mu.
+func (h *Host) resolveSeparatorLocked(toolName string) (*Tool, string, bool) {
+	if strings.Contains(toolName, "__") {
+		return nil, "", false
+	}
+	var (
+		found    *Tool
+		resolved string
+		best     int
+	)
+	for name, tool := range h.tools {
+		prefix, base, _ := strings.Cut(name, "__")
+		if len(prefix) <= best || len(toolName) != len(name)-1 || !strings.HasPrefix(toolName, prefix) {
+			continue
+		}
+		if sep := toolName[len(prefix)]; strings.ContainsRune("._-/:", rune(sep)) && toolName[len(prefix)+1:] == base {
+			found, resolved, best = tool, name, len(prefix)
+		}
+	}
+	return found, resolved, found != nil
 }
 
 // resolveByBaseNameLocked repairs a call whose tool name is real but whose
@@ -734,7 +761,7 @@ func defaultDial(ctx context.Context, spec ServerSpec, stderr io.Writer) (Conn, 
 	}
 	// Do not bind the child to the boot/signal context: SIGTERM must let the
 	// agent finish the in-flight turn before Host.Close kills MCP children.
-	cmd := exec.Command(spec.Command, spec.Args...) //nolint:gosec // G204: command comes from operator mcp.toml
+	cmd := exec.Command(spec.Command, ExpandAuthArgs(spec.Args)...) //nolint:gosec // G204: command comes from operator mcp.toml
 	cmd.Env = append(os.Environ(), spec.Env...)
 	cmd.Stderr = stderr
 

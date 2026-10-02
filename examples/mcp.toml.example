@@ -126,14 +126,14 @@
 # # Bind the same host dir on every crane: ./boards:/boards.
 
 # --- Coding agent (repos/fs-mcp, repos/git-mcp, repos/shell-mcp, repos/github-mcp)
-# --root is the jail. Compose mounts the tree at /workspace.
-# Change it on a native unit. github-mcp reads GITHUB_TOKEN or GH_TOKEN
+# --root is the jail. george sets GEORGE_ROOT to the git toplevel of
+# the cwd (export it to pick another tree). github-mcp reads GITHUB_TOKEN or GH_TOKEN
 # from the process env and skips startup when both are empty.
 
 [[server]]
 name    = "fs"
 command = "fs-mcp"
-args    = ["--root", "/workspace", "--tool-tier", "core"]
+args    = ["--root", "${GEORGE_ROOT}", "--tool-tier", "core"]
 force   = true
 download_tag = "latest"
 download_url = "https://github.com/shotah/fs-mcp/releases/download/{tag}/fs-mcp_{version}_{os}_{arch}.tar.gz"
@@ -141,7 +141,7 @@ download_url = "https://github.com/shotah/fs-mcp/releases/download/{tag}/fs-mcp_
 [[server]]
 name    = "git"
 command = "git-mcp"
-args    = ["--root", "/workspace", "--tool-tier", "core"]
+args    = ["--root", "${GEORGE_ROOT}", "--tool-tier", "core"]
 force   = true
 download_tag = "latest"
 download_url = "https://github.com/shotah/git-mcp/releases/download/{tag}/git-mcp_{version}_{os}_{arch}.tar.gz"
@@ -149,7 +149,7 @@ download_url = "https://github.com/shotah/git-mcp/releases/download/{tag}/git-mc
 [[server]]
 name    = "shell"
 command = "shell-mcp"
-args    = ["--root", "/workspace"]
+args    = ["--root", "${GEORGE_ROOT}"]
 force   = true
 download_tag = "latest"
 download_url = "https://github.com/shotah/shell-mcp/releases/download/{tag}/shell-mcp_{version}_{os}_{arch}.tar.gz"

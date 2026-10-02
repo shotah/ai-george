@@ -522,12 +522,11 @@ func TestAgent_Handle_ProseToolPromiseGetsNudged(t *testing.T) {
 			if last.Role != provider.RoleUser || !strings.Contains(last.Content, "no tool call was made") {
 				t.Fatalf("missing tool-promise nudge: %+v", last)
 			}
-			// On Gemini the system blocks fold to the top; the wire must still
-			// end on a user turn or the compat layer answers 400 and the human
-			// hears nothing.
-			wire := provider.WireMessages("gemini-x", req.Messages)
+			// Under LLM_SYSTEM_FOLD=one the system blocks fold to the top; the
+			// wire must still end on a user turn, not the assistant's prose.
+			wire := provider.WireMessagesMode(provider.FoldOne, req.Messages)
 			if tail := wire[len(wire)-1]; tail.Role != provider.RoleUser {
-				t.Fatalf("gemini wire ends on %s, want user: %+v", tail.Role, tail)
+				t.Fatalf("fold=one wire ends on %s, want user: %+v", tail.Role, tail)
 			}
 			return &provider.Result{ToolCalls: []provider.ToolCall{
 				{ID: "c1", Name: "garmin__sleep_get", Arguments: `{}`},

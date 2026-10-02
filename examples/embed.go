@@ -1,5 +1,5 @@
 // Package examples embeds operator templates for `george init`.
-// Keep files here as the source of truth; deploy/ is a thin local-dev mount.
+// Keep files here as the source of truth; init copies them to config.Dir().
 package examples
 
 import "embed"

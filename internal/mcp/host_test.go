@@ -402,6 +402,62 @@ command = "unused"
 	}
 }
 
+// The ways a local model mangles a coding tool name. Each one lands on the
+// real child call; a near miss with no single answer gets the real names back.
+func TestHost_MangledCodingToolNames(t *testing.T) {
+	path := writeManifest(t, `
+[[server]]
+name = "fs"
+command = "unused"
+[[server]]
+name = "git"
+command = "unused"
+[[server]]
+name = "shell"
+command = "unused"
+`)
+	tools := map[string][]mcp.Tool{
+		"fs":    {{OriginalName: "file_get"}, {OriginalName: "file_patch"}, {OriginalName: "file_list"}},
+		"git":   {{OriginalName: "status_get"}, {OriginalName: "diff_get"}},
+		"shell": {{OriginalName: "command_run"}},
+	}
+	host, err := mcp.Start(context.Background(), mcp.Options{
+		ManifestPath: path,
+		Dial: func(_ context.Context, spec mcp.ServerSpec, _ io.Writer) (mcp.Conn, error) {
+			return &fakeConn{tools: tools[spec.Name]}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	for _, tc := range []struct{ name, wantTool string }{
+		{"fs__file_get", "file_get"},
+		{"fs.file_get", "file_get"},
+		{"git_status_get", "status_get"},
+		{"shell-command_run", "command_run"},
+		{"file_patch", "file_patch"},
+		{"workspace__file_list", "file_list"},
+		{"functions.fs__file_get", "file_get"},
+	} {
+		got, err := host.Call(context.Background(), tc.name, json.RawMessage(`{"path":"a.go"}`))
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if !strings.HasPrefix(got, tc.wantTool+":") {
+			t.Errorf("%s: got %q, want %s:…", tc.name, got, tc.wantTool)
+		}
+	}
+
+	_, err = host.Call(context.Background(), "fs__get_file", json.RawMessage(`{}`))
+	var unk *mcp.UnknownToolError
+	if !errors.As(err, &unk) || !slices.Contains(unk.Candidates, "fs__file_get") {
+		t.Fatalf("near miss: err = %v, want UnknownToolError naming fs__file_get", err)
+	}
+}
+
 func TestHost_SkipServerOmitsWithoutFailure(t *testing.T) {
 	path := writeManifest(t, `
 [[server]]
