@@ -1,0 +1,410 @@
+package cron
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/shotah/george/internal/channel"
+	"github.com/shotah/george/internal/memory"
+	"github.com/shotah/george/internal/session"
+)
+
+// JobUserPrefix wraps user-scheduled job prompts (not the daily planner or example pings).
+// It must stay a single paragraph plus a trailing blank line so the agent can
+// split wrapper from job body when deciding whether live tools were skipped.
+const JobUserPrefix = "[cron] Scheduled job — you scheduled this continuation. If [job memory] is present, that is why. Recall/tools as needed. Decide what is useful now: message, act, postpone, cancel, or [silent]. Do not nag. The original chat may be gone. If this job needs live data, call those tools first — do not write the report, tables, or numbers until tool results are in context. Never guess metrics; if a tool fails, say so. If the human does not need a message (all-clear or work-only), reply with exactly [silent] and nothing else. If you asked a question they should answer, [wait] on its own line.\n\n"
+
+// ExamplesPingPrefix wraps capability-example pings.
+const ExamplesPingPrefix = "[cron] Capability example — inspire the human with one concrete idea (propose only). If a ping would be noise, reply with exactly [silent] and nothing else:\n\n"
+
+// DefaultTick is how often the runner polls for due jobs.
+const DefaultTick = 15 * time.Second
+
+// DefaultExamplesSkipRecent is how long a recent user message suppresses an examples ping.
+const DefaultExamplesSkipRecent = 30 * time.Minute
+
+// RecentUserActivity reports whether the human messaged recently (examples barge-in guard).
+type RecentUserActivity interface {
+	UserActiveSince(ctx context.Context, sessionID string, since time.Time) (bool, error)
+}
+
+// ExamplePromptBuilder builds the live inventory-aware prompt for examples_ping.
+type ExamplePromptBuilder interface {
+	BuildPingPrompt(ctx context.Context) string
+}
+
+// Runner wakes due jobs, runs the agent, and pushes replies.
+type Runner struct {
+	Store    *Store
+	Handle   channel.Handler
+	Pusher   channel.Pusher
+	Interval time.Duration
+	Logger   *slog.Logger
+	// Recent is optional; when set, examples_ping defers if the user chatted recently.
+	Recent RecentUserActivity
+	// ExamplesSkipRecent defaults to DefaultExamplesSkipRecent when <= 0.
+	ExamplesSkipRecent time.Duration
+	// Examples is optional; when set, examples_ping prompts are built at fire time.
+	Examples ExamplePromptBuilder
+	// Memory is optional; used to inject [job memory] and skip example pings during sleep.
+	Memory memory.Memory
+	// Talk is optional; follow-up jobs use conversation state.
+	Talk *session.Store
+}
+
+// Start polls until ctx is cancelled. Jobs run serially (overlap skipped via Claim).
+func (r *Runner) Start(ctx context.Context) {
+	if r == nil || r.Store == nil || r.Handle == nil || r.Pusher == nil {
+		return
+	}
+	log := r.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	interval := r.Interval
+	if interval <= 0 {
+		interval = DefaultTick
+	}
+	if n, err := r.Store.ClearStaleRunning(ctx); err != nil {
+		log.Warn("cron clear stale running failed", "err", err)
+	} else if n > 0 {
+		log.Info("cron cleared stale running flags", "count", n)
+	}
+	log.Info("cron runner started", "interval", interval.String())
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	r.poll(ctx, log)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("cron runner stopped")
+			return
+		case <-ticker.C:
+			r.poll(ctx, log)
+		}
+	}
+}
+
+func (r *Runner) poll(ctx context.Context, log *slog.Logger) {
+	now := time.Now().UTC()
+	jobs, err := r.Store.Due(ctx, now, 5)
+	if err != nil {
+		log.Warn("cron due query failed", "err", err)
+		return
+	}
+	for _, job := range jobs {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		ok, err := r.Store.Claim(ctx, job.ID, now)
+		if err != nil {
+			log.Warn("cron claim failed", "id", job.ID, "err", err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		r.runOne(ctx, log, job)
+	}
+}
+
+func (r *Runner) runOne(ctx context.Context, log *slog.Logger, job Job) {
+	log.Info("cron job firing",
+		append(jobDest(job), "memory_id", job.MemoryID, "prompt", truncate(job.Prompt, 80))...)
+
+	if job.Kind == KindExamples {
+		r.runExamplesPlanner(ctx, log, job)
+		return
+	}
+
+	if (job.Kind == KindExamplesPing || job.Kind == KindFollowUp) && r.asleep(ctx, job) {
+		until := time.Now().UTC().Add(time.Hour)
+		log.Info("cron ping deferred (sleep hours)",
+			"id", job.ID, "kind", job.Kind, "session_id", job.SessionID, "until", until.Format(time.RFC3339))
+		_ = r.Store.Defer(ctx, job.ID, until, "skipped: sleep hours")
+		return
+	}
+
+	if job.Kind == KindExamplesPing && r.Recent != nil {
+		skipFor := r.skipRecentFor(job.Kind)
+		since := time.Now().UTC().Add(-skipFor)
+		active, err := r.Recent.UserActiveSince(ctx, job.SessionID, since)
+		if err != nil {
+			log.Warn("cron recent-chat check failed", "id", job.ID, "kind", job.Kind, "err", err)
+		} else if active {
+			// One defer; if still chatting on retry, drop the ping (day already planned).
+			if strings.HasPrefix(job.LastError, "skipped:") {
+				log.Info("cron ping skipped after defer (recent chat); dropping",
+					"id", job.ID, "kind", job.Kind, "session_id", job.SessionID)
+				_ = r.Store.Finish(ctx, job, nil)
+				return
+			}
+			until := time.Now().UTC().Add(skipFor)
+			log.Info("cron ping deferred (recent chat)",
+				"id", job.ID, "kind", job.Kind, "session_id", job.SessionID, "until", until.Format(time.RFC3339))
+			_ = r.Store.Defer(ctx, job.ID, until, "skipped: user active in last "+skipFor.String())
+			return
+		}
+	}
+
+	if job.Kind == KindExamplesPing && r.waitingActive(ctx, job.SessionID) {
+		log.Info("cron ping skipped (waiting for reply)",
+			"id", job.ID, "kind", job.Kind, "session_id", job.SessionID)
+		_ = r.Store.Finish(ctx, job, nil)
+		return
+	}
+
+	if job.Kind == KindFollowUp && r.skipFollowUp(ctx, job.SessionID) {
+		log.Info("cron follow-up skipped (wait cleared or exhausted)",
+			"id", job.ID, "session_id", job.SessionID)
+		_ = r.Store.Finish(ctx, job, nil)
+		return
+	}
+
+	prefix := JobUserPrefix
+	prompt := job.Prompt
+	handleCtx := ctx
+	switch job.Kind {
+	case KindDailyPlanner:
+		prefix = DailyPlannerPrefix
+		if strings.TrimSpace(prompt) == "" {
+			prompt = DefaultDailyPlannerPrompt
+		}
+	case KindExamplesPing:
+		prefix = ExamplesPingPrefix
+		if r.Examples != nil {
+			prompt = r.Examples.BuildPingPrompt(ctx)
+		}
+		handleCtx = channel.WithNoTools(ctx)
+	case KindFollowUp:
+		nudge := 0
+		if r.Talk != nil {
+			if st, err := r.Talk.TalkState(ctx, job.SessionID); err == nil {
+				nudge = st.WaitNudges
+			}
+		}
+		prefix = FollowUpPrefix(nudge, MaxWaitNudges)
+	}
+	text := prefix + r.jobMemoryBlock(ctx, log, job) + prompt
+	msg := channel.Message{
+		SessionID: job.SessionID,
+		Text:      text,
+	}
+	handleCtx, sink := channel.AttachPhotoSink(handleCtx)
+	reply, err := r.Handle(handleCtx, msg)
+	if err != nil {
+		log.Warn("cron job handle failed", append(jobDest(job), "err", err, "outcome", "error")...)
+		_ = r.Store.Finish(ctx, job, err)
+		return
+	}
+	reply = StripWaitTokens(reply)
+	if job.Kind == KindFollowUp && r.humanRepliedDuring(ctx, job.SessionID) {
+		log.Info("cron follow-up dropped (user replied during turn)",
+			append(jobDest(job), "outcome", "drop")...)
+		if err := r.Store.Finish(ctx, job, nil); err != nil {
+			log.Warn("cron finish failed", "id", job.ID, "err", err)
+		}
+		return
+	}
+	outcome := "push"
+	photos := sink.URLs()
+	if IsSilentReply(reply) {
+		outcome = "silent"
+		log.Info("cron silent skip", append(jobDest(job), "outcome", outcome, "reply_chars", len(reply))...)
+	} else if reply != "" || len(photos) > 0 {
+		frameID := fmt.Sprintf("cron-%d-%d", job.ID, time.Now().UnixMilli())
+		if err := r.Pusher.Push(ctx, channel.Outbound{
+			Text:   reply,
+			Photos: photos,
+			ID:     frameID,
+		}); err != nil {
+			log.Warn("cron push failed", append(jobDest(job), "err", err, "outcome", "error", "frame_id", frameID)...)
+			_ = r.Store.Finish(ctx, job, fmt.Errorf("push: %w", err))
+			return
+		}
+		log.Info("cron job pushed", append(jobDest(job), "outcome", outcome, "frame_id", frameID, "reply_chars", len(reply))...)
+	} else {
+		outcome = "silent"
+		log.Info("cron empty reply", append(jobDest(job), "outcome", outcome)...)
+	}
+	if job.Kind == KindFollowUp {
+		r.afterFollowUp(ctx, log, job)
+	}
+	if err := r.Store.Finish(ctx, job, nil); err != nil {
+		log.Warn("cron finish failed", "id", job.ID, "err", err)
+	}
+}
+
+// waitingActive is an in-flight follow-up campaign (not yet exhausted).
+func (r *Runner) waitingActive(ctx context.Context, sessionID string) bool {
+	if r == nil || r.Talk == nil {
+		return false
+	}
+	st, err := r.Talk.TalkState(ctx, sessionID)
+	if err != nil || !st.WaitingForReply {
+		return false
+	}
+	return st.WaitNudges < MaxWaitNudges
+}
+
+// skipFollowUp is true when the leftover job should not poke.
+func (r *Runner) skipFollowUp(ctx context.Context, sessionID string) bool {
+	if r == nil || r.Talk == nil {
+		return false
+	}
+	st, err := r.Talk.TalkState(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	return !st.WaitingForReply || st.WaitNudges >= MaxWaitNudges
+}
+
+func (r *Runner) humanRepliedDuring(ctx context.Context, sessionID string) bool {
+	if r == nil || r.Recent == nil {
+		return false
+	}
+	ok, err := r.Recent.UserActiveSince(ctx, sessionID, time.Now().UTC().Add(-time.Minute))
+	return err == nil && ok
+}
+
+func (r *Runner) afterFollowUp(ctx context.Context, log *slog.Logger, job Job) {
+	if r == nil || r.Talk == nil {
+		return
+	}
+	st, err := r.Talk.TalkState(ctx, job.SessionID)
+	if err != nil {
+		log.Warn("cron follow-up talk state", "id", job.ID, "err", err)
+		return
+	}
+	if !st.WaitingForReply {
+		return
+	}
+	st, err = r.Talk.BumpWaitNudge(ctx, job.SessionID)
+	if err != nil {
+		log.Warn("cron follow-up bump failed", "id", job.ID, "err", err)
+		return
+	}
+	delay, ok := NextFollowUpDelay(st.WaitNudges)
+	if !ok || !st.WaitingForReply {
+		return
+	}
+	delivery := Delivery{
+		SessionID: job.SessionID,
+	}
+	tz := job.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	if _, err := r.Store.ScheduleFollowUp(ctx, delivery, tz, time.Now().UTC().Add(delay)); err != nil {
+		log.Warn("cron follow-up reschedule failed", "id", job.ID, "err", err)
+	}
+}
+
+func (r *Runner) jobMemoryBlock(ctx context.Context, log *slog.Logger, job Job) string {
+	if r == nil || r.Memory == nil {
+		return ""
+	}
+	if job.MemoryID == 0 && strings.TrimSpace(job.MemorySubject) == "" {
+		return ""
+	}
+	e, ok := memory.ResolvePin(ctx, r.Memory, job.MemoryID, job.MemorySubject)
+	if !ok {
+		if log != nil {
+			log.Warn("cron job memory missing; running on prompt",
+				"id", job.ID, "memory_id", job.MemoryID, "subject", job.MemorySubject)
+		}
+		return ""
+	}
+	return FormatJobMemory(e.Kind, e.Subject, e.Content)
+}
+
+// FormatJobMemory renders the pinned row for a scheduled turn.
+func FormatJobMemory(kind, subject, content string) string {
+	kind = strings.TrimSpace(kind)
+	subject = strings.TrimSpace(subject)
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	return fmt.Sprintf("[job memory]\n- (%s) %s: %s\n\n", kind, subject, content)
+}
+
+func (r *Runner) asleep(ctx context.Context, job Job) bool {
+	if r == nil || r.Memory == nil {
+		return false
+	}
+	e, ok, err := r.Memory.ActiveByKindSubject(ctx, memory.KindPreference, memory.SubjectHours)
+	if err != nil || !ok {
+		return false
+	}
+	loc, err := loadTZ(job.Timezone)
+	if err != nil || loc == nil {
+		loc = time.UTC
+	}
+	return memory.ParseHours(e.Content).AsleepAt(time.Now().In(loc))
+}
+
+func (r *Runner) skipRecentFor(kind string) time.Duration {
+	if kind == KindExamplesPing && r.ExamplesSkipRecent > 0 {
+		return r.ExamplesSkipRecent
+	}
+	return DefaultExamplesSkipRecent
+}
+
+// runExamplesPlanner rolls today's qty, inserts spaced examples_ping jobs, advances planner.
+func (r *Runner) runExamplesPlanner(ctx context.Context, log *slog.Logger, job Job) {
+	spec, err := ParseSpread(job.Expr)
+	if err != nil {
+		log.Warn("examples planner bad expr", "id", job.ID, "err", err)
+		_ = r.Store.Finish(ctx, job, err)
+		return
+	}
+	loc, err := loadTZ(job.Timezone)
+	if err != nil {
+		log.Warn("examples planner tz", "id", job.ID, "err", err)
+		_ = r.Store.Finish(ctx, job, err)
+		return
+	}
+	delivery := Delivery{
+		SessionID: job.SessionID,
+	}
+	_, _ = r.Store.CancelExamplesPings(ctx, job.SessionID)
+	n, times, err := PlanSpreadTimes(spec, loc, time.Now())
+	if err != nil {
+		log.Warn("examples planner plan failed", "id", job.ID, "err", err)
+		_ = r.Store.Finish(ctx, job, err)
+		return
+	}
+	created, err := r.Store.ScheduleExamplesPings(ctx, job.Prompt, delivery, loc.String(), times)
+	if err != nil {
+		log.Warn("examples planner schedule pings failed", "id", job.ID, "err", err)
+		_ = r.Store.Finish(ctx, job, err)
+		return
+	}
+	log.Info("examples planner seeded day",
+		"id", job.ID,
+		"qty", n,
+		"pings", created,
+		"session_id", job.SessionID,
+	)
+	if err := r.Store.Finish(ctx, job, nil); err != nil {
+		log.Warn("examples planner finish failed", "id", job.ID, "err", err)
+	}
+}
+
+func jobDest(job Job) []any {
+	return []any{
+		"id", job.ID,
+		"kind", job.Kind,
+		"session_id", job.SessionID,
+	}
+}
+
+// FireDueForTest runs one poll cycle (tests).
+func (r *Runner) FireDueForTest(ctx context.Context) {
+	r.poll(ctx, slog.Default())
+}

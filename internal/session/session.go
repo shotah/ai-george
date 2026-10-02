@@ -1,0 +1,411 @@
+// Package session stores bounded conversation history in SQLite.
+package session
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (database/sql)
+
+	"github.com/shotah/george/internal/channel"
+)
+
+// Role values persisted for conversation turns (system/persona is not stored).
+const (
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+)
+
+// Message is one persisted conversation turn.
+type Message struct {
+	Role      string
+	Content   string
+	CreatedAt string // set when trimming so fold-failure restore keeps order
+}
+
+// Store is a SQLite-backed session history.
+type Store struct {
+	db           *sql.DB
+	maxMessages  int
+	maxEstTokens int
+	summarizer   Summarizer // optional; folds trimmed turns into session.summary
+	foldHook     FoldHook   // optional; after a successful fold (trim already committed)
+}
+
+// FoldHook sees the prior and next session summaries after a successful trim
+// fold. Used to graduate new Voice: material into SELF.md. Must not fail the
+// trim — the hook logs its own errors.
+type FoldHook func(prior, next string)
+
+// WithSummarizer enables rolling summary when history is trimmed.
+func (s *Store) WithSummarizer(sum Summarizer) *Store {
+	if s != nil {
+		s.summarizer = sum
+	}
+	return s
+}
+
+// WithFoldHook runs after a successful fold. Call after WithSummarizer.
+func (s *Store) WithFoldHook(h FoldHook) *Store {
+	if s != nil {
+		s.foldHook = h
+	}
+	return s
+}
+
+// Open opens (or creates) george.db under dataDir and runs migrations.
+func Open(dataDir string, maxMessages, maxEstTokens int) (*Store, error) {
+	if maxMessages < 1 {
+		maxMessages = 200
+	}
+	if maxEstTokens < 1 {
+		maxEstTokens = 32000
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("session: mkdir data dir: %w", err)
+	}
+	dbPath := filepath.Join(dataDir, "george.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("session: open db: %w", err)
+	}
+	db.SetMaxOpenConns(1) // SQLite: serialize writers
+	db.SetMaxIdleConns(1)
+
+	s := &Store{db: db, maxMessages: maxMessages, maxEstTokens: maxEstTokens}
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) migrate() error {
+	stmts := []string{
+		`PRAGMA journal_mode=WAL;`,
+		`PRAGMA foreign_keys=ON;`,
+		`CREATE TABLE IF NOT EXISTS session (
+			id                 TEXT PRIMARY KEY,
+			summary            TEXT NOT NULL DEFAULT '',
+			updated_at         TEXT NOT NULL,
+			last_speaker       TEXT NOT NULL DEFAULT '',
+			waiting_for_reply  INTEGER NOT NULL DEFAULT 0,
+			wait_nudges        INTEGER NOT NULL DEFAULT 0,
+			wait_set_at        TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE TABLE IF NOT EXISTS session_message (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+			role       TEXT NOT NULL,
+			content    TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_message_session
+			ON session_message(session_id, id);`,
+	}
+	for _, q := range stmts {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("session: migrate: %w", err)
+		}
+	}
+	// Existing DBs: CREATE IF NOT EXISTS will not add columns.
+	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN last_speaker TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN waiting_for_reply INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN wait_nudges INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE session ADD COLUMN wait_set_at TEXT NOT NULL DEFAULT ''`)
+	return collapseToAgent(s.db)
+}
+
+func collapseToAgent(db *sql.DB) error {
+	sid := channel.AgentSession
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		INSERT INTO session (id, summary, updated_at) VALUES (?, '', ?)
+		ON CONFLICT(id) DO NOTHING`, sid, now); err != nil {
+		return fmt.Errorf("session: collapse insert: %w", err)
+	}
+	var summary string
+	_ = db.QueryRow(`SELECT summary FROM session WHERE id = ?`, sid).Scan(&summary)
+	if strings.TrimSpace(summary) == "" {
+		_ = db.QueryRow(`SELECT summary FROM session WHERE summary != '' ORDER BY length(summary) DESC LIMIT 1`).Scan(&summary)
+		if strings.TrimSpace(summary) != "" {
+			if _, err := db.Exec(`UPDATE session SET summary = ? WHERE id = ?`, summary, sid); err != nil {
+				return fmt.Errorf("session: collapse summary: %w", err)
+			}
+		}
+	}
+	var gWaiting int
+	_ = db.QueryRow(`SELECT waiting_for_reply FROM session WHERE id = ?`, sid).Scan(&gWaiting)
+	if gWaiting == 0 {
+		var ls, waitSet string
+		var wr, wn int
+		err := db.QueryRow(`
+			SELECT last_speaker, waiting_for_reply, wait_nudges, wait_set_at
+			FROM session WHERE id != ? ORDER BY updated_at DESC LIMIT 1`, sid).Scan(&ls, &wr, &wn, &waitSet)
+		if err == nil && wr != 0 {
+			if _, err := db.Exec(`
+				UPDATE session SET last_speaker = ?, waiting_for_reply = ?, wait_nudges = ?, wait_set_at = ?
+				WHERE id = ?`, ls, wr, wn, waitSet, sid); err != nil {
+				return fmt.Errorf("session: collapse wait: %w", err)
+			}
+		}
+	}
+	if _, err := db.Exec(`UPDATE session_message SET session_id = ? WHERE session_id != ?`, sid, sid); err != nil {
+		return fmt.Errorf("session: collapse messages: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM session WHERE id != ?`, sid); err != nil {
+		return fmt.Errorf("session: collapse sessions: %w", err)
+	}
+	return nil
+}
+
+// DB returns the underlying database handle (shared by memory when builtin).
+func (s *Store) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
+// Close closes the underlying database.
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+// Messages returns the bounded history for sessionID (oldest first).
+func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, content
+		FROM session_message
+		WHERE session_id = ?
+		ORDER BY id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session: query messages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.Role, &m.Content); err != nil {
+			return nil, fmt.Errorf("session: scan message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Append writes turns and trims the session to configured bounds.
+func (s *Store) Append(ctx context.Context, sessionID string, msgs ...Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("session: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO session (id, summary, updated_at) VALUES (?, '', ?)
+		ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+		sessionID, now); err != nil {
+		return fmt.Errorf("session: upsert session: %w", err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO session_message (session_id, role, content, created_at)
+		VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("session: prepare insert: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	lastRole := ""
+	for _, m := range msgs {
+		role := strings.TrimSpace(m.Role)
+		if role != RoleUser && role != RoleAssistant {
+			return fmt.Errorf("session: invalid role %q", m.Role)
+		}
+		if _, err := stmt.ExecContext(ctx, sessionID, role, m.Content, now); err != nil {
+			return fmt.Errorf("session: insert message: %w", err)
+		}
+		lastRole = role
+	}
+	if lastRole != "" {
+		speaker := SpeakerAgent
+		if lastRole == RoleUser {
+			speaker = SpeakerUser
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE session SET last_speaker = ? WHERE id = ?`, speaker, sessionID); err != nil {
+			return fmt.Errorf("session: last speaker: %w", err)
+		}
+	}
+
+	dropped, dropIDs, err := s.planTrimTx(ctx, tx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	var foldedPrior, foldedNext string
+	if len(dropIDs) > 0 {
+		if s.summarizer != nil {
+			var prior string
+			err := tx.QueryRowContext(ctx, `SELECT summary FROM session WHERE id = ?`, sessionID).Scan(&prior)
+			if err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("session: summary: %w", err)
+			}
+			next, err := s.summarizer.Fold(ctx, prior, dropped)
+			if err != nil {
+				// Keep history intact when fold fails — do not delete without a summary.
+				slog.Warn("session summary fold failed; skipping trim", "session_id", sessionID, "err", err)
+			} else {
+				if err := s.deleteMessageIDs(ctx, tx, dropIDs); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE session SET summary = ?, updated_at = ? WHERE id = ?`,
+					next, now, sessionID); err != nil {
+					return fmt.Errorf("session: set summary: %w", err)
+				}
+				foldedPrior, foldedNext = prior, next
+			}
+		} else if err := s.deleteMessageIDs(ctx, tx, dropIDs); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("session: commit: %w", err)
+	}
+	if s.foldHook != nil && foldedNext != "" {
+		s.foldHook(foldedPrior, foldedNext)
+	}
+	return nil
+}
+
+// Reset deletes all history for sessionID (memory untouched — different store).
+func (s *Store) Reset(ctx context.Context, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM session WHERE id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf("session: reset: %w", err)
+	}
+	return nil
+}
+
+// Stats returns message count and estimated tokens (chars/4) for a session.
+func (s *Store) Stats(ctx context.Context, sessionID string) (messages int, estTokens int, err error) {
+	msgs, err := s.Messages(ctx, sessionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return len(msgs), EstTokens(msgs), nil
+}
+
+// UserActiveSince reports whether a human user message exists at or after since.
+// Cron-injected turns ("[cron]…") are ignored so scheduled jobs do not suppress themselves.
+func (s *Store) UserActiveSince(ctx context.Context, sessionID string, since time.Time) (bool, error) {
+	t, ok, err := s.LastUserAt(ctx, sessionID)
+	if err != nil || !ok {
+		return false, err
+	}
+	return !t.Before(since.UTC()), nil
+}
+
+// LastUserAt is when the last human message landed in sessionID (the
+// [last contact] stamp). Cron-injected turns are ignored. ok is false for a
+// fresh session or an unparseable timestamp.
+func (s *Store) LastUserAt(ctx context.Context, sessionID string) (time.Time, bool, error) {
+	var created string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT created_at FROM session_message
+		WHERE session_id = ? AND role = ?
+		  AND content NOT LIKE '[cron]%'
+		ORDER BY id DESC LIMIT 1`, sessionID, RoleUser).Scan(&created)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("session: last user message: %w", err)
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, created)
+		if err != nil {
+			return time.Time{}, false, nil
+		}
+	}
+	return t, true, nil
+}
+
+// planTrimTx returns oldest messages that would be removed to satisfy bounds
+// without deleting them yet (so fold can fail safely).
+func (s *Store) planTrimTx(ctx context.Context, tx *sql.Tx, sessionID string) ([]Message, []int64, error) {
+	var dropped []Message
+	var ids []int64
+	var skipChars int
+	for {
+		var count int
+		var chars int
+		err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
+			FROM session_message WHERE session_id = ?`, sessionID).Scan(&count, &chars)
+		if err != nil {
+			return nil, nil, fmt.Errorf("session: trim stats: %w", err)
+		}
+		remain := count - len(ids)
+		est := (chars - skipChars + 3) / 4
+		if remain <= s.maxMessages && est <= s.maxEstTokens {
+			return dropped, ids, nil
+		}
+		if remain <= 2 {
+			return dropped, ids, nil
+		}
+
+		var id int64
+		var m Message
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, role, content FROM session_message
+			WHERE session_id = ?
+			ORDER BY id ASC
+			LIMIT 1 OFFSET ?`, sessionID, len(ids)).Scan(&id, &m.Role, &m.Content)
+		if err == sql.ErrNoRows {
+			return dropped, ids, nil
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("session: trim peek: %w", err)
+		}
+		ids = append(ids, id)
+		skipChars += len(m.Content)
+		dropped = append(dropped, m)
+	}
+}
+
+func (s *Store) deleteMessageIDs(ctx context.Context, tx *sql.Tx, ids []int64) error {
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM session_message WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("session: trim delete: %w", err)
+		}
+	}
+	return nil
+}
+
+// EstTokens returns the chars/4 token estimate for messages.
+func EstTokens(msgs []Message) int {
+	n := 0
+	for _, m := range msgs {
+		n += (len(m.Content) + 3) / 4
+	}
+	return n
+}

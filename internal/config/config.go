@@ -1,0 +1,405 @@
+// Package config loads and validates george configuration from the environment.
+// Boot is fail-fast: missing required values return a clear error.
+package config
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+)
+
+// Channel names accepted by CHANNEL.
+const (
+	ChannelTelegram = "telegram"
+	ChannelDiscord  = "discord"
+	ChannelSlack    = "slack"
+	ChannelStdio    = "stdio"
+	ChannelPendant  = "pendant"
+)
+
+// Config is the complete env-driven configuration surface.
+// Secrets and scalars live here; structure (persona, MCP manifest) is mounts.
+type Config struct {
+	LLMBaseURL string `env:"LLM_BASE_URL,required"`
+	LLMAPIKey  string `env:"LLM_API_KEY,required"`
+	LLMModel   string `env:"LLM_MODEL,required"`
+	// LLMMaxTokens caps completion output (incl. tool-call args). 0 = provider default.
+	LLMMaxTokens int `env:"LLM_MAX_TOKENS" envDefault:"4096"`
+	// LLMReasoningEffort is sent as reasoning_effort when non-empty (Ollama/Qwen:
+	// "none" disables thinking so max_tokens is not eaten by hidden chain-of-thought).
+	LLMReasoningEffort string `env:"LLM_REASONING_EFFORT"`
+	// LLMSystemFold is how system blocks reach the wire: auto (gemini* → one
+	// leading system message, else the agent layout), one, or many.
+	LLMSystemFold string `env:"LLM_SYSTEM_FOLD" envDefault:"auto"`
+
+	TelegramBotToken     string  `env:"TELEGRAM_BOT_TOKEN"`
+	TelegramAllowedUsers []int64 `env:"TELEGRAM_ALLOWED_USERS" envSeparator:","`
+	// TelegramErrorReporting tees slog ERROR (or WARN+) into the SAM Telegram
+	// chat as an expandable HTML alert. off|error|warn. Only when CHANNEL=telegram.
+	TelegramErrorReporting string `env:"TELEGRAM_ERROR_REPORTING" envDefault:"off"`
+
+	DiscordBotToken     string   `env:"DISCORD_BOT_TOKEN"`
+	DiscordAllowedUsers []string `env:"DISCORD_ALLOWED_USERS" envSeparator:","`
+
+	SlackBotToken     string   `env:"SLACK_BOT_TOKEN"` // xoxb-
+	SlackAppToken     string   `env:"SLACK_APP_TOKEN"` // xapp- (Socket Mode)
+	SlackAllowedUsers []string `env:"SLACK_ALLOWED_USERS" envSeparator:","`
+
+	PendantMailboxURL   string   `env:"PENDANT_MAILBOX_URL"`
+	PendantBearer       string   `env:"PENDANT_BEARER"`
+	PendantAllowedUsers []string `env:"PENDANT_ALLOWED_USERS" envSeparator:","`
+
+	Channel     string `env:"CHANNEL" envDefault:"stdio"`
+	PersonaDir  string `env:"PERSONA_DIR" envDefault:"/persona"`
+	DataDir     string `env:"DATA_DIR" envDefault:"/data"`
+	MCPManifest string `env:"MCP_MANIFEST" envDefault:"/etc/george/mcp.toml"`
+
+	HistoryMaxMessages int `env:"HISTORY_MAX_MESSAGES" envDefault:"200"`
+	HistoryMaxTokens   int `env:"HISTORY_MAX_TOKENS" envDefault:"32000"` // estimated (chars/4); older turns fold into Facts/Voice
+	// HistoryStripFillers drops a small function-word list from older user
+	// history at prompt time. Last 40 messages stay verbatim; assistant turns
+	// are never stripped. SQLite stays verbatim.
+	HistoryStripFillers bool `env:"HISTORY_STRIP_FILLERS" envDefault:"true"`
+	ToolResultMaxChars  int  `env:"TOOL_RESULT_MAX_CHARS" envDefault:"6000"`
+	ToolMaxIterations   int  `env:"TOOL_MAX_ITERATIONS" envDefault:"10"`
+	// ToolSchemaMaxTokens is an optional hard cap on estimated tool-schema tokens
+	// (chars/4 of name+description+parameters). 0 = log estimate only.
+	ToolSchemaMaxTokens int `env:"TOOL_SCHEMA_MAX_TOKENS" envDefault:"0"`
+	// MCPEnableForce is a comma-separated list of prefixes that stay published
+	// when dynamic_tools is on (e.g. google__calendar,garmin__sleep).
+	MCPEnableForce string `env:"MCP_ENABLE_FORCE"`
+
+	// ToolsEnabled controls whether tool schemas are sent to the model.
+	// false omits MCP, memory_*, cron_*, watch_*, and web_search from every completion — required
+	// for models that reject tools (e.g. Ollama gemma3). Memory/cron/watch backends may
+	// still start; only the agent tool surface is cleared.
+	ToolsEnabled bool `env:"TOOLS_ENABLED" envDefault:"true"`
+
+	// WebSearchEnabled publishes builtin web_search (Brave Search HTTP).
+	// Leftover google-search MCP grants are omitted while this is on.
+	WebSearchEnabled bool `env:"WEB_SEARCH_ENABLED" envDefault:"true"`
+	// BraveSearchAPIKey is the Brave Search subscription token.
+	BraveSearchAPIKey string `env:"BRAVE_SEARCH_API_KEY"`
+
+	// SelfNotesEnabled lets the agent keep SELF.md in PERSONA_DIR: a self_note
+	// tool for jotting personality lines, plus a distill pass on /new that
+	// folds the dying session's voice/jokes/rituals into the file so they
+	// survive the reset. Auto-disables when PERSONA_DIR is not writable.
+	SelfNotesEnabled bool `env:"SELF_NOTES_ENABLED" envDefault:"true"`
+
+	MemoryEnabled            bool   `env:"MEMORY_ENABLED" envDefault:"true"`
+	MemoryBackend            string `env:"MEMORY_BACKEND" envDefault:"builtin"`
+	MemoryConsolidateMinutes int    `env:"MEMORY_CONSOLIDATE_MINUTES" envDefault:"30"` // 0 = off
+
+	CronEnabled     bool   `env:"CRON_ENABLED" envDefault:"true"`
+	CronTZ          string `env:"CRON_TZ" envDefault:"America/Los_Angeles"`
+	CronMaxJobs     int    `env:"CRON_MAX_JOBS" envDefault:"50"`
+	CronTickSeconds int    `env:"CRON_TICK_SECONDS" envDefault:"15"`
+	// DailyPlannerAt is the local clock of the once-a-day planning session.
+	// The agent can move it per session with /planner or cron_schedule repeat=planner.
+	DailyPlannerAt string `env:"DAILY_PLANNER_AT" envDefault:"07:10"`
+
+	// Watch polls MCP fetch tools and wakes the agent only on new item ids.
+	WatchEnabled bool `env:"WATCH_ENABLED" envDefault:"true"`
+	WatchMax     int  `env:"WATCH_MAX" envDefault:"50"`
+
+	// Capability examples / training wheels (on by default). Empty or "0" = no proactive pings;
+	// /examples on-demand still works. Qty: "1", "1-2".
+	ExamplesQty               string `env:"EXAMPLES_QTY" envDefault:"1-2"`
+	ExamplesStartHour         int    `env:"EXAMPLES_START_HOUR" envDefault:"6"`
+	ExamplesEndHour           int    `env:"EXAMPLES_END_HOUR" envDefault:"21"`
+	ExamplesSkipRecentMinutes int    `env:"EXAMPLES_SKIP_RECENT_MINUTES" envDefault:"60"`
+
+	StreamReplies bool `env:"STREAM_REPLIES" envDefault:"true"`
+
+	// ShowThinking controls whether chain-of-thought is rendered in the Telegram
+	// stream bubble (live italics → final expandable blockquote). On by default;
+	// set false for a quieter bubble. Pair with LLM_REASONING_EFFORT=none on
+	// slow local models so CoT is not generated (and therefore not shown).
+	// Needs STREAM_REPLIES=true. Does not change model-side think on/off.
+	ShowThinking bool `env:"SHOW_THINKING" envDefault:"true"`
+
+	// ToolTrace controls user-visible tool activity when STREAM_REPLIES is on.
+	// compact = Making Calls: ✓, ✗ (default); full = → name / ✓ timing lines;
+	// off = hide tool activity entirely. Journal logs are unaffected.
+	ToolTrace string `env:"TOOL_TRACE" envDefault:"compact"`
+
+	// CoalesceSettleMS is quiet time after the last chat bubble before
+	// steering the live turn (or starting a new one if it already finished).
+	// 0 disables. Default 2000ms.
+	CoalesceSettleMS int `env:"COALESCE_SETTLE_MS" envDefault:"2000"`
+
+	// SpinupNoticeMS posts a "still working" line once a turn has gone this
+	// long without model output. The first turn after start posts immediately.
+	// Needs STREAM_REPLIES=true. 0 disables. Default 4000ms.
+	SpinupNoticeMS int `env:"SPINUP_NOTICE_MS" envDefault:"4000"`
+
+	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
+}
+
+// Load parses environment variables into Config and validates channel-specific
+// requirements. Returns a descriptive error on any failure.
+func Load() (*Config, error) {
+	var cfg Config
+	if err := env.Parse(&cfg); err != nil {
+		return nil, fmt.Errorf("parse env: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// Validate checks cross-field and channel-specific rules after env parsing.
+func (c *Config) Validate() error {
+	c.Channel = strings.ToLower(strings.TrimSpace(c.Channel))
+	c.LogLevel = strings.ToLower(strings.TrimSpace(c.LogLevel))
+	c.MemoryBackend = strings.TrimSpace(c.MemoryBackend)
+
+	switch c.Channel {
+	case ChannelTelegram, ChannelDiscord, ChannelSlack, ChannelStdio, ChannelPendant:
+	default:
+		return fmt.Errorf("CHANNEL: must be telegram|discord|slack|stdio|pendant, got %q", c.Channel)
+	}
+
+	if c.Channel == ChannelTelegram {
+		if strings.TrimSpace(c.TelegramBotToken) == "" {
+			return fmt.Errorf("TELEGRAM_BOT_TOKEN: required when CHANNEL=telegram")
+		}
+		if len(c.TelegramAllowedUsers) == 0 {
+			return fmt.Errorf("TELEGRAM_ALLOWED_USERS: required when CHANNEL=telegram (comma-separated user ids)")
+		}
+	}
+
+	if c.Channel == ChannelDiscord {
+		if strings.TrimSpace(c.DiscordBotToken) == "" {
+			return fmt.Errorf("DISCORD_BOT_TOKEN: required when CHANNEL=discord")
+		}
+		n := 0
+		for i, id := range c.DiscordAllowedUsers {
+			id = strings.TrimSpace(id)
+			c.DiscordAllowedUsers[i] = id
+			if id != "" {
+				n++
+			}
+		}
+		if n == 0 {
+			return fmt.Errorf("DISCORD_ALLOWED_USERS: required when CHANNEL=discord (comma-separated snowflake user ids)")
+		}
+	}
+
+	if c.Channel == ChannelSlack {
+		if strings.TrimSpace(c.SlackBotToken) == "" {
+			return fmt.Errorf("SLACK_BOT_TOKEN: required when CHANNEL=slack (xoxb-…)")
+		}
+		if strings.TrimSpace(c.SlackAppToken) == "" {
+			return fmt.Errorf("SLACK_APP_TOKEN: required when CHANNEL=slack (xapp-… Socket Mode)")
+		}
+		n := 0
+		for i, id := range c.SlackAllowedUsers {
+			id = strings.TrimSpace(id)
+			c.SlackAllowedUsers[i] = id
+			if id != "" {
+				n++
+			}
+		}
+		if n == 0 {
+			return fmt.Errorf("SLACK_ALLOWED_USERS: required when CHANNEL=slack (comma-separated user ids)")
+		}
+	}
+
+	if c.Channel == ChannelPendant {
+		if strings.TrimSpace(c.PendantMailboxURL) == "" {
+			return fmt.Errorf("PENDANT_MAILBOX_URL: required when CHANNEL=pendant (wss://…/ws/<slug>)")
+		}
+		if strings.TrimSpace(c.PendantBearer) == "" {
+			return fmt.Errorf("PENDANT_BEARER: required when CHANNEL=pendant")
+		}
+		n := 0
+		for i, id := range c.PendantAllowedUsers {
+			id = strings.TrimSpace(id)
+			c.PendantAllowedUsers[i] = id
+			if id != "" {
+				n++
+			}
+		}
+		if n == 0 {
+			return fmt.Errorf("PENDANT_ALLOWED_USERS: required when CHANNEL=pendant (Google sub, sub:email, or email)")
+		}
+	}
+
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("LOG_LEVEL: must be debug|info|warn|error, got %q", c.LogLevel)
+	}
+
+	c.ToolTrace = strings.ToLower(strings.TrimSpace(c.ToolTrace))
+	switch c.ToolTrace {
+	case "", "full", "compact", "off":
+		if c.ToolTrace == "" {
+			c.ToolTrace = "compact"
+		}
+	default:
+		return fmt.Errorf("TOOL_TRACE: must be full|compact|off, got %q", c.ToolTrace)
+	}
+
+	c.TelegramErrorReporting = strings.ToLower(strings.TrimSpace(c.TelegramErrorReporting))
+	switch c.TelegramErrorReporting {
+	case "", "off", "error", "warn":
+		if c.TelegramErrorReporting == "" {
+			c.TelegramErrorReporting = "off"
+		}
+	default:
+		return fmt.Errorf("TELEGRAM_ERROR_REPORTING: must be off|error|warn, got %q", c.TelegramErrorReporting)
+	}
+	if c.TelegramErrorReporting != "off" && c.Channel != ChannelTelegram {
+		return fmt.Errorf("TELEGRAM_ERROR_REPORTING: only supported when CHANNEL=telegram")
+	}
+
+	if c.LLMMaxTokens < 0 {
+		return fmt.Errorf("LLM_MAX_TOKENS: must be >= 0, got %d", c.LLMMaxTokens)
+	}
+	c.LLMReasoningEffort = strings.TrimSpace(c.LLMReasoningEffort)
+	if c.LLMReasoningEffort != "" {
+		switch c.LLMReasoningEffort {
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		default:
+			return fmt.Errorf("LLM_REASONING_EFFORT: must be none|minimal|low|medium|high|xhigh|max, got %q", c.LLMReasoningEffort)
+		}
+	}
+	c.LLMSystemFold = strings.ToLower(strings.TrimSpace(c.LLMSystemFold))
+	switch c.LLMSystemFold {
+	case "", "auto", "one", "many":
+	default:
+		return fmt.Errorf("LLM_SYSTEM_FOLD: must be auto|one|many, got %q", c.LLMSystemFold)
+	}
+	if c.HistoryMaxMessages < 1 {
+		return fmt.Errorf("HISTORY_MAX_MESSAGES: must be >= 1, got %d", c.HistoryMaxMessages)
+	}
+	if c.HistoryMaxTokens < 1 {
+		return fmt.Errorf("HISTORY_MAX_TOKENS: must be >= 1, got %d", c.HistoryMaxTokens)
+	}
+	if c.ToolResultMaxChars < 1 {
+		return fmt.Errorf("TOOL_RESULT_MAX_CHARS: must be >= 1, got %d", c.ToolResultMaxChars)
+	}
+	if c.ToolMaxIterations < 1 {
+		return fmt.Errorf("TOOL_MAX_ITERATIONS: must be >= 1, got %d", c.ToolMaxIterations)
+	}
+	if c.ToolSchemaMaxTokens < 0 {
+		return fmt.Errorf("TOOL_SCHEMA_MAX_TOKENS: must be >= 0, got %d", c.ToolSchemaMaxTokens)
+	}
+	if c.CoalesceSettleMS < 0 {
+		return fmt.Errorf("COALESCE_SETTLE_MS: must be >= 0, got %d", c.CoalesceSettleMS)
+	}
+	if c.SpinupNoticeMS < 0 {
+		return fmt.Errorf("SPINUP_NOTICE_MS: must be >= 0, got %d", c.SpinupNoticeMS)
+	}
+	if c.MemoryConsolidateMinutes < 0 {
+		return fmt.Errorf("MEMORY_CONSOLIDATE_MINUTES: must be >= 0, got %d", c.MemoryConsolidateMinutes)
+	}
+	c.CronTZ = strings.TrimSpace(c.CronTZ)
+	if c.CronTZ == "" {
+		c.CronTZ = "America/Los_Angeles"
+	}
+	if c.CronMaxJobs < 1 {
+		return fmt.Errorf("CRON_MAX_JOBS: must be >= 1, got %d", c.CronMaxJobs)
+	}
+	if c.CronTickSeconds < 1 {
+		return fmt.Errorf("CRON_TICK_SECONDS: must be >= 1, got %d", c.CronTickSeconds)
+	}
+	at, err := normalizePlannerAt(c.DailyPlannerAt)
+	if err != nil {
+		return fmt.Errorf("DAILY_PLANNER_AT: %w", err)
+	}
+	c.DailyPlannerAt = at
+	if c.WatchMax < 1 {
+		return fmt.Errorf("WATCH_MAX: must be >= 1, got %d", c.WatchMax)
+	}
+	if _, err := timeLoadLocation(c.CronTZ); err != nil {
+		return fmt.Errorf("CRON_TZ: %w", err)
+	}
+
+	c.ExamplesQty = strings.TrimSpace(c.ExamplesQty)
+	if qtyEnabled(c.ExamplesQty) {
+		if c.ExamplesStartHour < 0 || c.ExamplesStartHour > 23 {
+			return fmt.Errorf("EXAMPLES_START_HOUR: must be 0–23, got %d", c.ExamplesStartHour)
+		}
+		if c.ExamplesEndHour < 1 || c.ExamplesEndHour > 24 || c.ExamplesEndHour <= c.ExamplesStartHour {
+			return fmt.Errorf("EXAMPLES_END_HOUR: must be 1–24 and > EXAMPLES_START_HOUR, got %d", c.ExamplesEndHour)
+		}
+		if c.ExamplesSkipRecentMinutes < 0 {
+			return fmt.Errorf("EXAMPLES_SKIP_RECENT_MINUTES: must be >= 0, got %d", c.ExamplesSkipRecentMinutes)
+		}
+	}
+
+	if err := validateMemoryBackend(c.MemoryBackend); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.PersonaDir) == "" {
+		return fmt.Errorf("PERSONA_DIR: must not be empty")
+	}
+	if strings.TrimSpace(c.DataDir) == "" {
+		return fmt.Errorf("DATA_DIR: must not be empty")
+	}
+	if strings.TrimSpace(c.MCPManifest) == "" {
+		return fmt.Errorf("MCP_MANIFEST: must not be empty")
+	}
+	if strings.TrimSpace(c.LLMBaseURL) == "" {
+		return fmt.Errorf("LLM_BASE_URL: must not be empty")
+	}
+	if strings.TrimSpace(c.LLMAPIKey) == "" {
+		return fmt.Errorf("LLM_API_KEY: must not be empty")
+	}
+	if strings.TrimSpace(c.LLMModel) == "" {
+		return fmt.Errorf("LLM_MODEL: must not be empty")
+	}
+
+	return nil
+}
+
+// normalizePlannerAt accepts 24-hour HH:MM (or H:MM) and returns HH:MM.
+func normalizePlannerAt(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("must be HH:MM, got %q", s)
+	}
+	hour, errH := strconv.Atoi(parts[0])
+	minute, errM := strconv.Atoi(parts[1])
+	if errH != nil || errM != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return "", fmt.Errorf("must be HH:MM, got %q", s)
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute), nil
+}
+
+func timeLoadLocation(name string) (*time.Location, error) {
+	if strings.EqualFold(name, "UTC") {
+		return time.UTC, nil
+	}
+	return time.LoadLocation(name)
+}
+
+func validateMemoryBackend(backend string) error {
+	if backend == "builtin" {
+		return nil
+	}
+	if strings.HasPrefix(backend, "mcp:") {
+		name := strings.TrimPrefix(backend, "mcp:")
+		if name == "" {
+			return fmt.Errorf("MEMORY_BACKEND: mcp:<server-name> requires a server name")
+		}
+		return nil
+	}
+	return fmt.Errorf("MEMORY_BACKEND: must be %q or %q, got %q", "builtin", "mcp:<server-name>", backend)
+}
+
+// qtyEnabled is the on-switch for EXAMPLES_QTY. Empty or "0" = off.
+func qtyEnabled(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" && s != "0"
+}

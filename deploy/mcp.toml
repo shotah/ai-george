@@ -1,0 +1,10 @@
+# Thin local-dev mount. Canonical sample: examples/mcp.toml.example
+# Regenerate comments/shape via: make init (skips if this file already exists)
+
+# [[server]]
+# name    = "example"
+# command = "example-mcp"
+# args    = ["--flag", "value"]
+# tools   = ["tool_a", "tool_b"]
+# # exclude = ["raw_*"]
+# # tools_prefix = "ex"

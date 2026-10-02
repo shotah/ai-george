@@ -1,0 +1,126 @@
+# MCP server manifest — listed = granted (process may start).
+# Mount at MCP_MANIFEST (default /etc/george/mcp.toml).
+#
+# Prefix enable (default on): schemas stay off until mcp_enable.
+# Small models / rollback — publish everything every turn:
+#   dynamic_tools = false
+# Furniture that should never idle-drop (when dynamic_tools is on):
+#   force = true   on a [[server]]   (or MCP_ENABLE_FORCE=google__calendar,garmin__sleep)
+#
+# Tool names reach the model as {tools_prefix or name}__{tool}.
+#
+# Optional publishing filters (host-side, after tools/list):
+#   tools   = ["get_sleep", "get_weight"]   # allowlist (omit = all)
+#   exclude = ["raw_*"]                     # denylist (shell-style * ?)
+#   tools_prefix = "garm"                   # override name used in {prefix}__{tool}
+#
+# Optional call budget — the vendor quota, enforced in the host on every path
+# (turns, cron, watch polls, retries). Over it the tool returns a refusal that
+# names the reset; watch_add on that server is raised to the matching floor.
+#   budget = "1/day"      # or "50/month"; counted in george.db, human's midnight
+#
+# Optional auth (george auth <name>):
+#   auth_command = "…"   # default: command
+#   auth_args    = ["login"]  # ${ENV} expanded
+#
+# Optional native bake (george tools-plan / remote-native-fetch):
+#   download_tag = "v0.0.2"   # or "latest" (GitHub API at plan time)
+#   download_url = "https://github.com/org/repo/releases/download/{tag}/tool_{version}_{os}_{arch}.tar.gz"
+#
+# [[server]]
+# name    = "example"
+# command = "example-mcp"
+# args    = ["--flag", "value"]
+# auth_args = ["auth"]
+
+# --- Shape used by LOCAL_AGENT (binaries must exist on PATH) -------------------------
+#
+# [[server]]
+# name    = "google"
+# command = "google-mcp"
+# args    = ["--preset", "everyday"]
+# auth_args = ["auth"]
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/google-mcp/releases/download/{tag}/google-mcp_{version}_{os}_{arch}.tar.gz"
+#
+# [[server]]
+# name    = "strava"
+# command = "strava-mcp"
+# auth_args = ["auth"]
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/go-strava-mcp/releases/download/{tag}/strava-mcp_{version}_{os}_{arch}.tar.gz"
+#
+# [[server]]
+# name    = "garmin"
+# command = "garmin"
+# args    = ["mcp", "--tool-tier", "core"]
+# auth_args = ["login"]
+#
+# Web search is a george builtin (web_search). Do not grant google-search.
+#
+# [[server]]
+# name    = "cast"
+# command = "mcp-beam"
+#
+# [[server]]
+# name    = "youtube"
+# command = "youtube-go-mcp"
+# auth_args = ["auth", "oauth", "--out", "${YOUTUBE_OAUTH_PATH}"]
+#
+# [[server]]
+# name    = "math"
+# command = "mcp-go-math"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/mcp-go-math/releases/download/{tag}/mcp-go-math_{version}_{os}_{arch}.tar.gz"
+#
+# [[server]]
+# name    = "feeds"
+# command = "feeds-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/feeds-mcp/releases/download/{tag}/feeds-mcp_{version}_{os}_{arch}.tar.gz"
+# # tools = ["items_list", "source_resolve"]  # omit = both
+# # Optional process env: FEEDS_USER_AGENT (NWS wants a contact UA)
+#
+# [[server]]
+# name    = "rentals"
+# command = "rentals-search-mcp"
+# budget  = "1/day"   # metered API: one listings search a day, whoever asks
+#
+# [[server]]
+# name    = "twitter"
+# command = "twitter-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/twitter-mcp/releases/download/{tag}/twitter-mcp_{version}_{os}_{arch}.tar.gz"
+# # tools = ["posts_list"]
+# # X_BEARER_TOKEN must be in the george process env (child inherits it)
+#
+# [[server]]
+# name    = "maps"
+# command = "google-maps-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/google-maps-mcp/releases/download/{tag}/google-maps-mcp_{version}_{os}_{arch}.tar.gz"
+# # tools = ["link_resolve", "place_resolve", "place_search", "route_eta"]
+# # GOOGLE_MAPS_API_KEY in process env (child inherits). link_resolve works without it.
+#
+# [[server]]
+# name    = "image"
+# command = "image-generation-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/image-generation-mcp/releases/download/{tag}/image-generation-mcp_{version}_{os}_{arch}.tar.gz"
+# # IMAGE_API_KEY wins; else crane LLM_API_KEY. Do not grant fat google for drawing.
+#
+# [[server]]
+# name    = "pendant"
+# command = "pendant-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/pendant-mcp/releases/download/{tag}/pendant-mcp_{version}_{os}_{arch}.tar.gz"
+# # PENDANT_MAILBOX_URL + PENDANT_BEARER already in process env when CHANNEL=pendant.
+# # IMAGE_OUTPUT_DIR must be set for the picture pair (avatar_update / backdrop_update).
+#
+# [[server]]
+# name    = "boards"
+# command = "boards-mcp"
+# download_tag = "latest"
+# download_url = "https://github.com/shotah/boards-mcp/releases/download/{tag}/boards-mcp_{version}_{os}_{arch}.tar.gz"
+# # BOARDS_AUTHOR required in process env. Optional BOARDS_PATH=/boards.
+# # Bind the same host dir on every crane: ./boards:/boards.

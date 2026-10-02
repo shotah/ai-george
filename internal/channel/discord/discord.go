@@ -1,0 +1,313 @@
+// Package discord implements a Discord Gateway channel (DMs first).
+//
+// Auth model is allowlist-only (DISCORD_ALLOWED_USERS) — no pairing flow.
+// Empty allowlist is rejected at config validation time.
+// Connection is outbound WebSocket only (no inbound ports).
+package discord
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/shotah/george/internal/channel"
+)
+
+const (
+	typingInterval = 5 * time.Second
+	chunkPause     = 100 * time.Millisecond
+)
+
+// Config configures the Discord channel.
+type Config struct {
+	Token         string
+	AllowedUsers  []string // Discord snowflake user IDs
+	Logger        *slog.Logger
+	StreamReplies bool // placeholder + ChannelMessageEdit while the model streams
+}
+
+// sessionFactory builds a discordgo session (overridable in tests).
+type sessionFactory func(token string) (session, error)
+
+// session is the discordgo surface we use (narrow for tests).
+type session interface {
+	AddHandler(handler interface{}) func()
+	Open() error
+	Close() error
+	ChannelMessageSend(channelID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelMessageEdit(channelID, messageID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelTyping(channelID string, options ...discordgo.RequestOption) error
+	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	BotUserID() string
+}
+
+type discordSession struct {
+	*discordgo.Session
+}
+
+func (d *discordSession) BotUserID() string {
+	if d.State != nil && d.State.User != nil {
+		return d.State.User.ID
+	}
+	return ""
+}
+
+func defaultSessionFactory(token string) (session, error) {
+	dg, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return nil, err
+	}
+	dg.Identify.Intents = discordgo.IntentDirectMessages | discordgo.IntentMessageContent
+	return &discordSession{Session: dg}, nil
+}
+
+// Channel connects to the Discord Gateway and fans DM messages into a Handler.
+type Channel struct {
+	token         string
+	allowed       map[string]struct{}
+	log           *slog.Logger
+	newSession    sessionFactory
+	chunkMax      int
+	streamReplies bool
+
+	mu   sync.Mutex
+	sess session // set while Run is active; used by Push
+}
+
+// New builds a Discord channel. Token and a non-empty allowlist are required.
+func New(cfg Config) (*Channel, error) {
+	if strings.TrimSpace(cfg.Token) == "" {
+		return nil, fmt.Errorf("discord: token is required")
+	}
+	allowed := make(map[string]struct{})
+	for _, id := range cfg.AllowedUsers {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		allowed[id] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil, fmt.Errorf("discord: allowlist is empty (pairing is not supported; set DISCORD_ALLOWED_USERS)")
+	}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Channel{
+		token:         strings.TrimSpace(cfg.Token),
+		allowed:       allowed,
+		log:           log,
+		newSession:    defaultSessionFactory,
+		chunkMax:      discordMaxMessageRunes,
+		streamReplies: cfg.StreamReplies,
+	}, nil
+}
+
+// Run opens the Gateway until ctx is cancelled.
+func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
+	s, err := c.newSession(c.token)
+	if err != nil {
+		return fmt.Errorf("discord: create session: %w", err)
+	}
+	c.mu.Lock()
+	c.sess = s
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.sess = nil
+		c.mu.Unlock()
+		_ = s.Close()
+	}()
+
+	s.AddHandler(func(_ *discordgo.Session, ready *discordgo.Ready) {
+		c.log.Info("discord connected",
+			"bot_id", ready.User.ID,
+			"username", ready.User.Username,
+			"allowlist_users", len(c.allowed),
+		)
+	})
+	s.AddHandler(c.makeMessageHandler(ctx, handle))
+
+	if err := s.Open(); err != nil {
+		return fmt.Errorf("discord: open gateway: %w", err)
+	}
+
+	<-ctx.Done()
+	return nil
+}
+
+func (c *Channel) makeMessageHandler(ctx context.Context, handle channel.Handler) interface{} {
+	return func(_ *discordgo.Session, m *discordgo.MessageCreate) {
+		if m.Author == nil || m.Author.Bot {
+			return
+		}
+		// DMs only for v1 (guild mentions later).
+		if m.GuildID != "" {
+			return
+		}
+		userID := m.Author.ID
+		if !c.isAllowed(userID) {
+			c.log.Info("discord ignore unauthorized user",
+				"user_id", userID,
+				"username", m.Author.Username,
+			)
+			return
+		}
+		text := strings.TrimSpace(m.Content)
+
+		c.mu.Lock()
+		s := c.sess
+		c.mu.Unlock()
+		if s == nil {
+			return
+		}
+		if botID := s.BotUserID(); botID != "" && userID == botID {
+			return
+		}
+
+		images, err := inboundImages(ctx, m.Message)
+		if err != nil {
+			c.log.Error("discord attachment download failed", "err", err)
+			_, _ = s.ChannelMessageSend(m.ChannelID, "sorry — couldn't download that image")
+			return
+		}
+		if text == "" && len(images) == 0 {
+			return // stickers / empty
+		}
+
+		stopTyping := c.startTyping(ctx, s, m.ChannelID)
+		defer stopTyping()
+
+		var stream *editStream
+		handleCtx := ctx
+		if c.streamReplies {
+			stream = newEditStream(s, m.ChannelID, c.chunkMax)
+			handleCtx = channel.WithReplyWriter(ctx, stream)
+		}
+
+		handleCtx, sink := channel.AttachPhotoSink(handleCtx)
+		reply, err := handle(handleCtx, channel.Message{
+			SessionID: channel.AgentSession,
+			UserID:    userID,
+			ChatID:    m.ChannelID,
+			Text:      text,
+			Images:    images,
+		})
+		if err != nil {
+			c.log.Error("discord handler error", "err", err, "session_id", channel.AgentSession)
+			_, _ = s.ChannelMessageSend(m.ChannelID, "sorry — something went wrong handling that message")
+			return
+		}
+		photos := sink.URLs()
+		if stream != nil && stream.Started() {
+			urls, rest := channel.MergePhotoURLs(reply, photos...)
+			if err := stream.Finish(ctx, rest); err != nil {
+				c.log.Warn("discord stream finish failed; falling back to send", "err", err)
+				if reply != "" || len(photos) > 0 {
+					if err := c.sendReply(ctx, s, m.ChannelID, reply, photos...); err != nil {
+						c.log.Error("discord send failed", "err", err, "session_id", channel.AgentSession)
+					}
+				}
+				return
+			}
+			for _, u := range urls {
+				if err := sendImage(s, m.ChannelID, u); err != nil {
+					c.log.Error("discord send image failed", "err", err, "session_id", channel.AgentSession)
+				}
+			}
+			return
+		}
+		if reply == "" && len(photos) == 0 {
+			return
+		}
+		if err := c.sendReply(ctx, s, m.ChannelID, reply, photos...); err != nil {
+			c.log.Error("discord send failed", "err", err, "session_id", channel.AgentSession)
+		}
+	}
+}
+
+func (c *Channel) isAllowed(userID string) bool {
+	_, ok := c.allowed[userID]
+	return ok
+}
+
+func (c *Channel) allowlisted() []string {
+	ids := make([]string, 0, len(c.allowed))
+	for id := range c.allowed {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (c *Channel) startTyping(ctx context.Context, s session, channelID string) func() {
+	done := make(chan struct{})
+	go func() {
+		send := func() {
+			_ = s.ChannelTyping(channelID)
+		}
+		send()
+		t := time.NewTicker(typingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				send()
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// Push sends a proactive DM (cron) to every allowlisted user. The job does
+// not store a destination — this mouth is the destination.
+func (c *Channel) Push(ctx context.Context, msg channel.Outbound) error {
+	ids := c.allowlisted()
+	if len(ids) == 0 {
+		return fmt.Errorf("discord: allowlist empty")
+	}
+
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+
+	var err error
+	if s == nil {
+		s, err = c.newSession(c.token)
+		if err != nil {
+			return fmt.Errorf("discord: push session: %w", err)
+		}
+		if err := s.Open(); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("discord: push open: %w", err)
+		}
+		defer func() { _ = s.Close() }()
+	}
+
+	var first error
+	for _, uid := range ids {
+		ch, err := s.UserChannelCreate(uid)
+		if err != nil {
+			if first == nil {
+				first = fmt.Errorf("discord: open dm: %w", err)
+			}
+			continue
+		}
+		if err := c.sendReply(ctx, s, ch.ID, msg.Text, channel.PhotoURLs(msg)...); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}

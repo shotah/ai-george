@@ -1,0 +1,223 @@
+package memory
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/shotah/george/internal/channel"
+)
+
+// Subject prefixes stamped onto [harness] every turn (hydration is lossy).
+const (
+	SubjectAimPrefix     = "aim/"
+	SubjectWaitingPrefix = "waiting/"
+	SubjectFollowPrefix  = "follow/"
+	// SubjectTodoPrefix is the human's pocket list. The
+	// agent keeps the rows; nothing on it ages out.
+	SubjectTodoPrefix = "todo/"
+	// SubjectAimBootstrap is the fact row the model writes after asking the
+	// months-scale question on an empty board. Stamped on [aims] so the
+	// "did I already ask" check costs no memory_recall round.
+	SubjectAimBootstrap = "aim/bootstrap"
+	harnessHorizonMax   = 5
+	harnessHorizonClip  = 72
+	// horizonFetch is the ListBySubjectPrefix default window: wide enough
+	// that the "+N more" overflow count is honest for a real board.
+	horizonFetch = 30
+	// loopStaleAfter: an open loop untouched this long gets a resolve-or-forget
+	// cue so the [loops] cap does not fill with dead loops.
+	loopStaleAfter = 21 * 24 * time.Hour
+)
+
+// ErrNotSupported is returned by backends that cannot answer a lookup
+// (MCP memory has no live-row-by-subject). Callers skip the stamp instead
+// of treating "not found" as "ask the human again".
+var ErrNotSupported = errors.New("memory: not supported on this backend")
+
+// FormatAims is the per-turn [aims] line. Empty if there are no live aim/ rows.
+// North-star sentences stay in SELF.md; this is the tracker (insight + aim/<area>).
+// now stamps "(12d ago)" from updated_at; zero now omits ages.
+func FormatAims(entries []Entry, now time.Time) string {
+	return FormatAimsNoted(entries, now, nil)
+}
+
+// FormatAimsNoted is FormatAims with an optional rating suffix per area.
+// notes[area] empty leaves that aim unchanged. The five-aim cap still holds.
+func FormatAimsNoted(entries []Entry, now time.Time, notes map[string]string) string {
+	parts, more := horizonParts(entries, SubjectAimPrefix, now, 0)
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(notes) > 0 {
+		capped := entries
+		if len(capped) > harnessHorizonMax {
+			capped = capped[:harnessHorizonMax]
+		}
+		i := 0
+		for _, e := range capped {
+			label := strings.TrimPrefix(strings.TrimSpace(e.Subject), SubjectAimPrefix)
+			if label == "" {
+				continue
+			}
+			if i < len(parts) {
+				if s := strings.TrimSpace(notes[label]); s != "" {
+					parts[i] += " — " + s
+				}
+			}
+			i++
+		}
+	}
+	return "[aims] " + strings.Join(parts, " · ") + horizonMore(more, "memory_recall aim/")
+}
+
+// FormatAimsEmpty is the [aims] line when there are no live aim/ rows but
+// the model has already asked the months-scale question: the date it asked,
+// in now's zone, so "at most once per day" needs no lookup. Nil asked (never
+// asked) keeps the line absent — that absence is the ask cue.
+func FormatAimsEmpty(asked *Entry, now time.Time) string {
+	if asked == nil {
+		return ""
+	}
+	at := asked.UpdatedAt
+	if at.IsZero() {
+		at = asked.CreatedAt
+	}
+	if at.IsZero() {
+		return "[aims] none (asked)"
+	}
+	if !now.IsZero() {
+		at = at.In(now.Location())
+	}
+	return "[aims] none (asked " + at.Format("2006-01-02") + ")"
+}
+
+// FormatLoops is the per-turn [loops] line for open loops. waiting/ and
+// follow/ are interleaved so five open waits cannot hide every follow.
+// Loops untouched past three weeks carry a resolve-or-forget cue.
+func FormatLoops(waiting, follow []Entry, now time.Time) string {
+	parts, more := horizonParts(interleave(waiting, follow), "", now, loopStaleAfter)
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[loops] " + strings.Join(parts, " · ") + horizonMore(more, "memory_recall waiting/ follow/")
+}
+
+// FormatTodo is the per-turn [todo] line: the human's open tasks, oldest
+// first, each with its row id so "done" is a memory_forget by id and not
+// a query. No stale cue — a task the human has not done is still a task.
+func FormatTodo(entries []Entry, now time.Time) string {
+	parts, more := horizonParts(SortOldestFirst(entries), SubjectTodoPrefix, now, 0)
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[todo] " + strings.Join(parts, " · ") + horizonMore(more, "/todo")
+}
+
+// SortOldestFirst orders rows by updated_at (created_at fallback), oldest
+// first, without touching the input. The one that has sat longest is the
+// one to say out loud.
+func SortOldestFirst(entries []Entry) []Entry {
+	out := make([]Entry, len(entries))
+	copy(out, entries)
+	sort.SliceStable(out, func(i, j int) bool {
+		return entryAt(out[i]).Before(entryAt(out[j]))
+	})
+	return out
+}
+
+func entryAt(e Entry) time.Time {
+	if e.UpdatedAt.IsZero() {
+		return e.CreatedAt
+	}
+	return e.UpdatedAt
+}
+
+func horizonMore(n int, hint string) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (+%d more — %s)", n, hint)
+}
+
+func interleave(a, b []Entry) []Entry {
+	out := make([]Entry, 0, len(a)+len(b))
+	for i := 0; i < len(a) || i < len(b); i++ {
+		if i < len(a) {
+			out = append(out, a[i])
+		}
+		if i < len(b) {
+			out = append(out, b[i])
+		}
+	}
+	return out
+}
+
+// horizonParts renders up to harnessHorizonMax entries and returns how many
+// were cut so the line can say so instead of silently truncating.
+func horizonParts(entries []Entry, stripPrefix string, now time.Time, staleAfter time.Duration) ([]string, int) {
+	if len(entries) == 0 {
+		return nil, 0
+	}
+	more := 0
+	if len(entries) > harnessHorizonMax {
+		more = len(entries) - harnessHorizonMax
+		entries = entries[:harnessHorizonMax]
+	}
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		label := strings.TrimSpace(e.Subject)
+		if stripPrefix != "" {
+			label = strings.TrimPrefix(label, stripPrefix)
+		}
+		if label == "" {
+			continue
+		}
+		part := label
+		if stripPrefix == SubjectTodoPrefix && e.ID > 0 {
+			part = fmt.Sprintf("#%d %s", e.ID, label)
+		}
+		if body := clipHorizon(e.Content); body != "" {
+			part += ": " + body
+		}
+		parts = append(parts, part+horizonAge(e, now, staleAfter))
+	}
+	return parts, more
+}
+
+// HorizonAge is "(12d ago)" from updated_at (created_at fallback), the
+// same age the stamps print, for a text view that lists the same rows.
+// Empty inside the first day.
+func HorizonAge(e Entry, now time.Time) string {
+	return strings.TrimSpace(horizonAge(e, now, 0))
+}
+
+// horizonAge is " (12d ago)" from updated_at (created_at fallback). Nothing
+// inside the first day — a fresh row needs no age. Past staleAfter (>0) it
+// adds the resolve-or-forget cue.
+func horizonAge(e Entry, now time.Time, staleAfter time.Duration) string {
+	at := entryAt(e)
+	if at.IsZero() || now.IsZero() {
+		return ""
+	}
+	d := now.Sub(at)
+	if d < 24*time.Hour {
+		return ""
+	}
+	s := " (" + channel.Age(d)
+	if staleAfter > 0 && d >= staleAfter {
+		s += " — resolve or memory_forget"
+	}
+	return s + ")"
+}
+
+func clipHorizon(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= harnessHorizonClip {
+		return s
+	}
+	return string(r[:harnessHorizonClip-1]) + "…"
+}

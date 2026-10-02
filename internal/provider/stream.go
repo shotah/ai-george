@@ -1,0 +1,208 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/openai/openai-go/v3"
+)
+
+// Streamer is an optional Completer that can emit progressive text.
+// onProgress receives accumulated assistant content and thinking so far
+// (not raw deltas). If the model returns tool calls, onProgress is skipped
+// after the first tool-call chunk; the returned Result still includes ToolCalls.
+type Streamer interface {
+	CompleteStream(ctx context.Context, req Request, onProgress func(content, thinking string) error) (*Result, error)
+}
+
+type toolAcc struct {
+	id, name, args string
+}
+
+// streamToolBuf merges streaming tool-call deltas.
+//
+// Gemini's OpenAI-compat endpoint often emits parallel tool calls all with
+// index=0 (or omits index). OpenAI clients that key only on index then mash
+// names/args together. We key on tool call id when present, and treat a new
+// id at the same index as a new call.
+type streamToolBuf struct {
+	byIndex map[int]*toolAcc
+	byID    map[string]*toolAcc
+	order   []*toolAcc
+}
+
+func (b *streamToolBuf) accFor(index int, id string) *toolAcc {
+	if b.byIndex == nil {
+		b.byIndex = map[int]*toolAcc{}
+		b.byID = map[string]*toolAcc{}
+	}
+	if index < 0 {
+		index = 0
+	}
+	id = strings.TrimSpace(id)
+
+	if id != "" {
+		if acc, ok := b.byID[id]; ok {
+			b.byIndex[index] = acc
+			return acc
+		}
+		// New id at an index that already has a different call → parallel call
+		// with a reused/missing index (Gemini).
+		if cur, ok := b.byIndex[index]; ok && cur.id != "" && cur.id != id {
+			acc := &toolAcc{id: id}
+			b.byID[id] = acc
+			b.byIndex[index] = acc
+			b.order = append(b.order, acc)
+			return acc
+		}
+		acc, ok := b.byIndex[index]
+		if !ok {
+			acc = &toolAcc{}
+			b.byIndex[index] = acc
+			b.order = append(b.order, acc)
+		}
+		acc.id = id
+		b.byID[id] = acc
+		return acc
+	}
+
+	if acc, ok := b.byIndex[index]; ok {
+		return acc
+	}
+	acc := &toolAcc{}
+	b.byIndex[index] = acc
+	b.order = append(b.order, acc)
+	return acc
+}
+
+func mergeName(acc *toolAcc, delta string) {
+	if delta == "" {
+		return
+	}
+	// Providers either send name fragments ("yt"+"music__…") or resend the
+	// full name each chunk. Avoid doubling a full resend.
+	if acc.name == "" {
+		acc.name = delta
+		return
+	}
+	if strings.HasPrefix(delta, acc.name) {
+		acc.name = delta
+		return
+	}
+	if strings.HasPrefix(acc.name, delta) {
+		return
+	}
+	acc.name += delta
+}
+
+// CompleteStream streams chat.completions and accumulates text / tool calls.
+func (c *Client) CompleteStream(ctx context.Context, req Request, onProgress func(content, thinking string) error) (*Result, error) {
+	if len(req.Messages) == 0 {
+		return nil, fmt.Errorf("provider: messages must not be empty")
+	}
+	// A grammar-constrained reply is a JSON tool call, not prose — streaming it
+	// would type raw JSON into the user's bubble.
+	if len(req.ForceToolNames) > 0 {
+		return c.Complete(ctx, req)
+	}
+
+	params, err := c.buildParams(req)
+	if err != nil {
+		return nil, err
+	}
+	// Without this, STREAM_REPLIES (the default) never sees usage — OpenAI-compat
+	// only puts the blob on a trailing empty-choices chunk when asked.
+	params.StreamOptions.IncludeUsage = openai.Bool(true)
+
+	stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+	sawTool := false
+	var full strings.Builder
+	var thinking strings.Builder
+	var tools streamToolBuf
+	var finishReason, model, serviceTier string
+	var usage Usage
+
+	emit := func() error {
+		if sawTool || onProgress == nil {
+			return nil
+		}
+		return onProgress(full.String(), thinking.String())
+	}
+
+	for stream.Next() {
+		chunk := stream.Current()
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+		if t := string(chunk.ServiceTier); t != "" {
+			serviceTier = t
+		}
+		if chunk.JSON.Usage.Valid() {
+			usage = usageFrom(true, chunk.Usage)
+		} else if u := usageFrom(false, chunk.Usage); u.Present() {
+			usage = u
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		delta := choice.Delta
+		if len(delta.ToolCalls) > 0 {
+			sawTool = true
+			for _, tc := range delta.ToolCalls {
+				acc := tools.accFor(int(tc.Index), tc.ID)
+				mergeName(acc, tc.Function.Name)
+				acc.args += tc.Function.Arguments
+			}
+		}
+		changed := false
+		if d := extractThinkingJSON(delta.RawJSON()); d != "" {
+			thinking.WriteString(d)
+			changed = true
+		}
+		if d := delta.Content; d != "" {
+			full.WriteString(d)
+			changed = true
+		}
+		if changed {
+			if err := emit(); err != nil {
+				_ = stream.Close()
+				return nil, err
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, fmt.Errorf("provider: chat stream: %w", apiErrorWithBody(err))
+	}
+
+	out := &Result{
+		Content:      strings.TrimSpace(full.String()),
+		Thinking:     strings.TrimSpace(thinking.String()),
+		FinishReason: finishReason,
+		Model:        model,
+		ServiceTier:  serviceTier,
+		Usage:        usage,
+	}
+	for _, acc := range tools.order {
+		if acc == nil || (acc.name == "" && acc.id == "") {
+			continue
+		}
+		call := ToolCall{ID: acc.id, Name: acc.name, Arguments: acc.args}
+		// Streaming deltas don't carry Gemini thought_signature; synthesize
+		// with Google's skip token so the follow-up turn doesn't 400.
+		if raw, err := synthesizeToolCallRaw(call); err == nil {
+			call.Raw = raw
+		}
+		out.ToolCalls = append(out.ToolCalls, call)
+	}
+	// Thinking-only is valid for Qwen/Ollama when max_tokens is spent on CoT;
+	// callers (agent + Telegram stream) can finish without a hard error.
+	if out.Content == "" && len(out.ToolCalls) == 0 && out.Thinking == "" {
+		return nil, fmt.Errorf("%w (finish_reason=%q)", ErrEmptyContent, finishReason)
+	}
+	return out, nil
+}

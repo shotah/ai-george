@@ -1,0 +1,210 @@
+# george — common operator commands
+# Usage: make <target>
+
+CMD           := ./cmd/george
+BIN_DIR       := bin
+COVERAGE      := coverage.out
+COVERAGE_HTML := coverage.html
+
+# Static binary by default (matches container contract).
+export CGO_ENABLED ?= 0
+
+CHANNEL     ?= stdio
+PERSONA_DIR ?= ./deploy/persona
+
+ifeq ($(OS),Windows_NT)
+	BINARY    := $(BIN_DIR)/george.exe
+	NULL      := NUL
+	DATE      ?= unknown
+	MKDIR_BIN  = if not exist "$(BIN_DIR)" mkdir "$(BIN_DIR)"
+	RM_BIN     = if exist "$(BIN_DIR)" rmdir /s /q "$(BIN_DIR)"
+	RM_COV     = if exist "$(COVERAGE)" del /q "$(COVERAGE)" & if exist "$(COVERAGE_HTML)" del /q "$(COVERAGE_HTML)"
+	RUN_ENV    = set "CHANNEL=$(CHANNEL)"&& set "PERSONA_DIR=$(PERSONA_DIR)"&&
+else
+	BINARY    := $(BIN_DIR)/george
+	NULL      := /dev/null
+	DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+	MKDIR_BIN  = mkdir -p "$(BIN_DIR)"
+	RM_BIN     = rm -rf "$(BIN_DIR)"
+	RM_COV     = rm -f "$(COVERAGE)" "$(COVERAGE_HTML)"
+	RUN_ENV    = CHANNEL="$(CHANNEL)" PERSONA_DIR="$(PERSONA_DIR)"
+endif
+
+# Build-time version stamp (git describe). Release tags are tracked in ./VERSION.
+VERSION ?= $(shell git describe --tags --always --dirty 2>$(NULL) || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>$(NULL) || echo none)
+
+# go install lands here; snap/PATH often misses it (pre-commit + make fmt).
+GOBIN_DIR := $(shell go env GOBIN)
+ifeq ($(strip $(GOBIN_DIR)),)
+GOBIN_DIR := $(shell go env GOPATH)/bin
+endif
+ifneq ($(OS),Windows_NT)
+export PATH := $(GOBIN_DIR):$(PATH)
+endif
+
+# Release bump: patch (default), minor, or major. Or set TAG=v0.2.0 explicitly.
+BUMP ?= patch
+
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
+.PHONY: help
+help: ## Show available targets
+	@echo.
+	@echo george targets:
+	@echo   make build          Build george into ./bin
+	@echo   make run            Run with CHANNEL=stdio (override: CHANNEL= PERSONA_DIR=)
+	@echo   make init           Scaffold deploy/persona + deploy/mcp.toml via george init
+	@echo   make test           Run all tests
+	@echo   make test-verbose   Run tests with -v
+	@echo   make race           Race detector (needs CGO)
+	@echo   make integration-test  Live-model behavior eval (LLM_* in .env; docs/eval_setup.md)
+	@echo   make coverage       Write coverage.out + func summary
+	@echo   make coverage-html  HTML report -^> coverage.html
+	@echo   make vet            go vet ./...
+	@echo   make lint           golangci-lint run ./...
+	@echo   make fmt            Autofix imports/code (goimports-reviser + golangci-lint)
+	@echo   make tidy           go mod tidy
+	@echo   make check          Autofix, lint, and test (matches pre-commit)
+	@echo   make ci             tidy fmt vet lint test build
+	@echo   make docker-build   Build image george:local (Hub: shotah/george)
+	@echo   make docker-stdio   Interactive stdio via compose
+	@echo   make version        Show VERSION file + next tag (dry-run)
+	@echo   make release        Bump tag + latest, update VERSION, push (BUMP=patch^|minor^|major)
+	@echo   make install-hooks  Install git pre-commit (autofix + lint + test)
+	@echo   make tools          Install goimports-reviser + golangci-lint v2
+	@echo   make clean          Remove build/coverage artifacts
+	@echo.
+
+.PHONY: all
+all: fmt vet lint test build ## Format, vet, lint, test, then build
+
+.PHONY: build
+build: ## Build george into ./bin
+	@$(MKDIR_BIN)
+	go build -trimpath -ldflags="$(LDFLAGS)" -o "$(BINARY)" $(CMD)
+	@echo built $(BINARY)
+
+.PHONY: run
+run: ## Run george (CHANNEL=stdio by default for local REPL)
+	$(RUN_ENV) go run $(CMD) run
+
+.PHONY: init
+init: ## Scaffold deploy/ mounts from embedded examples (george init)
+	go run $(CMD) init
+
+.PHONY: test
+test: ## Run all tests
+	go test ./...
+
+.PHONY: test-verbose
+test-verbose: ## Run all tests with -v
+	go test -v ./...
+
+.PHONY: race
+race: ## Run tests with the race detector (requires CGO)
+	CGO_ENABLED=1 go test -race ./...
+
+# Behavioral eval against a live model (docs/eval_setup.md). Sources .env for
+# LLM_BASE_URL / LLM_API_KEY / LLM_MODEL; skips when they are unset. Fixtures:
+# internal/agent/testdata/eval. EVAL_ARGS='-eval.n=10 -eval.only=scoop_at_2,planner_gym_no_workout'.
+# A turn is ~15s; 7 fixtures x 10 runs is ~20min, so the go test timeout is
+# explicit (the default 10m kills the run mid-fixture).
+EVAL_ARGS ?=
+EVAL_TIMEOUT ?= 120m
+.PHONY: integration-test
+integration-test: ## Live-model behavior eval (needs LLM_* in .env; POSIX shell)
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	go test -tags integration -run '^TestEval_Live$$' -count=1 -v -timeout $(EVAL_TIMEOUT) ./internal/agent/ $(EVAL_ARGS)
+
+.PHONY: coverage
+coverage: ## Write coverage.out for ./internal/... ./cmd/... ./examples/... (matches CI badge)
+	go test ./internal/... ./cmd/... ./examples/... -coverprofile=$(COVERAGE) -covermode=atomic
+	go tool cover -func=$(COVERAGE)
+
+.PHONY: coverage-html
+coverage-html: coverage ## HTML coverage report
+	go tool cover -html=$(COVERAGE) -o $(COVERAGE_HTML)
+	@echo wrote $(COVERAGE_HTML)
+
+.PHONY: vet
+vet: ## Run go vet
+	go vet ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint (CGO_ENABLED=0 — same as the shipped binary)
+	golangci-lint run ./...
+
+.PHONY: fmt
+fmt: ## Autofix imports/code (goimports-reviser + golangci-lint fmt/fix)
+	goimports-reviser -format -recursive -excludes='repos/' .
+	-golangci-lint fmt ./...
+	-golangci-lint run --fix ./...
+
+.PHONY: tidy
+tidy: ## Sync go.mod / go.sum
+	go mod tidy
+
+.PHONY: check
+check: fmt lint test ## Autofix, lint, test (matches pre-commit)
+
+.PHONY: ci
+ci: tidy fmt vet lint test build ## Local stand-in for CI checks
+
+.PHONY: install-hooks
+install-hooks: ## Install git pre-commit hook (autofix + lint + test)
+ifeq ($(OS),Windows_NT)
+	copy /Y scripts\pre-commit .git\hooks\pre-commit
+else
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+endif
+	@echo "Installed .git/hooks/pre-commit"
+
+.PHONY: tools
+tools: ## Install goimports-reviser + golangci-lint v2 into $$GOBIN
+	# GOTOOLCHAIN=local: @latest modules often say `go 1.25`, and auto toolchain
+	# would rebuild the linter with 1.25 — then it refuses this repo (go 1.26).
+	# CGO_ENABLED=0: SteamOS has no libc headers; golangci-lint does not need cgo.
+	GOTOOLCHAIN=local CGO_ENABLED=0 go install github.com/incu6us/goimports-reviser/v3@latest
+	GOTOOLCHAIN=local CGO_ENABLED=0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+	@echo Installed to $(GOBIN_DIR). make fmt / the pre-commit hook prepend that dir to PATH.
+
+.PHONY: docker-build
+docker-build: ## Build the container image (george:local)
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		-t george:local .
+
+.PHONY: docker-stdio
+docker-stdio: ## Interactive stdio REPL via compose
+	docker compose run --rm -it -e CHANNEL=stdio george
+
+.PHONY: version
+version: ## Show VERSION file and latest git tag / next patch
+	@go run ./cmd/release -dry-run
+
+# Bump semver, commit VERSION, annotated-tag (v* + floating latest), push (triggers GoReleaser).
+# Examples:
+#   make release
+#   make release BUMP=minor
+#   make release BUMP=major
+#   make release TAG=v0.2.0
+#   make release DRY_RUN=1
+.PHONY: release
+release: ## Bump version + latest tags, update VERSION, push (BUMP=patch|minor|major)
+	go run ./cmd/release \
+		$(if $(TAG),-version=$(TAG),-bump=$(BUMP)) \
+		$(if $(DRY_RUN),-dry-run,) \
+		$(if $(SKIP_PUSH),-skip-push,) \
+		$(if $(ALLOW_DIRTY),-allow-dirty,)
+
+.PHONY: clean
+clean: ## Remove build and coverage artifacts
+	-$(RM_BIN)
+	-$(RM_COV)
+	go clean
+
+.DEFAULT_GOAL := help

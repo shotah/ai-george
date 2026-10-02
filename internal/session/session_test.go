@@ -1,0 +1,200 @@
+package session_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/shotah/george/internal/channel"
+	"github.com/shotah/george/internal/session"
+)
+
+func TestStore_AppendTrimReset(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.Open(dir, 4, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	id := "telegram:1:2"
+
+	for i := 0; i < 3; i++ {
+		if err := store.Append(ctx, id,
+			session.Message{Role: session.RoleUser, Content: "u"},
+			session.Message{Role: session.RoleAssistant, Content: "a"},
+		); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	msgs, err := store.Messages(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("len=%d want 4 (trimmed to maxMessages)", len(msgs))
+	}
+
+	n, est, err := store.Stats(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 || est <= 0 {
+		t.Fatalf("Stats = %d, %d", n, est)
+	}
+
+	if err := store.Reset(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err = store.Messages(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("after reset len=%d", len(msgs))
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "george.db")); err != nil {
+		t.Fatalf("db file missing: %v", err)
+	}
+}
+
+func TestStore_LastUserAt_SkipsCronRows(t *testing.T) {
+	store, err := session.Open(t.TempDir(), 20, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	id := "contact"
+
+	if _, ok, err := store.LastUserAt(ctx, id); err != nil || ok {
+		t.Fatalf("fresh session ok=%v err=%v", ok, err)
+	}
+	before := time.Now().Add(-time.Second)
+	if err := store.Append(ctx, id,
+		session.Message{Role: session.RoleUser, Content: "hi"},
+		session.Message{Role: session.RoleAssistant, Content: "hello"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	at, ok, err := store.LastUserAt(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if at.Before(before) || at.After(time.Now().Add(time.Second)) {
+		t.Fatalf("at=%v not around now", at)
+	}
+	if err := store.Append(ctx, id,
+		session.Message{Role: session.RoleUser, Content: "[cron] Daily planner — one planning session"},
+		session.Message{Role: session.RoleAssistant, Content: "[silent]"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	again, ok, err := store.LastUserAt(ctx, id)
+	if err != nil || !ok || !again.Equal(at) {
+		t.Fatalf("cron row moved last contact: %v → %v (ok=%v err=%v)", at, again, ok, err)
+	}
+	active, err := store.UserActiveSince(ctx, id, before)
+	if err != nil || !active {
+		t.Fatalf("UserActiveSince active=%v err=%v", active, err)
+	}
+}
+
+func TestStore_OpenDefaultsAndEdges(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.Open(dir, 0, 0) // defaults
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if store.DB() == nil {
+		t.Fatal("DB() nil")
+	}
+
+	ctx := context.Background()
+	if err := store.Append(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, "s", session.Message{Role: "system", Content: "nope"}); err == nil {
+		t.Fatal("expected invalid role error")
+	}
+	var nilStore *session.Store
+	if err := nilStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStore_TokenTrim(t *testing.T) {
+	dir := t.TempDir()
+	// Tiny token budget forces trim even with high message cap.
+	store, err := session.Open(dir, 100, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	big := strings.Repeat("x", 80) // ~20 est tokens each
+	for i := 0; i < 5; i++ {
+		if err := store.Append(ctx, "s",
+			session.Message{Role: session.RoleUser, Content: big},
+			session.Message{Role: session.RoleAssistant, Content: big},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, err := store.Messages(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) > 4 {
+		t.Fatalf("expected token trim, got %d messages", len(msgs))
+	}
+	if session.EstTokens(msgs) > 10 && len(msgs) > 2 {
+		t.Fatalf("est_tokens=%d still over budget with %d msgs", session.EstTokens(msgs), len(msgs))
+	}
+}
+
+func TestCollapse_MergesMouthHistory(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.Open(dir, 20, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.Append(ctx, "telegram:1:2",
+		session.Message{Role: session.RoleUser, Content: "hi"},
+		session.Message{Role: session.RoleAssistant, Content: "hey"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = session.Open(dir, 20, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	old, err := store.Messages(ctx, "telegram:1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("mouth session should be gone, got %d", len(old))
+	}
+	msgs, err := store.Messages(ctx, channel.AgentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].Content != "hi" || msgs[1].Content != "hey" {
+		t.Fatalf("collapsed msgs=%+v", msgs)
+	}
+}

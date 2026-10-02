@@ -1,0 +1,418 @@
+package config_test
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/shotah/george/internal/config"
+)
+
+func setRequiredLLM(t *testing.T) {
+	t.Helper()
+	t.Setenv("LLM_BASE_URL", "https://example.com/v1")
+	t.Setenv("LLM_API_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+}
+
+func TestLoad_StdioDefaults(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	if err := os.Unsetenv("CHANNEL"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Channel != config.ChannelStdio {
+		t.Errorf("Channel = %q, want stdio", cfg.Channel)
+	}
+	if cfg.PersonaDir != "/persona" {
+		t.Errorf("PersonaDir = %q, want /persona", cfg.PersonaDir)
+	}
+	if cfg.DataDir != "/data" {
+		t.Errorf("DataDir = %q, want /data", cfg.DataDir)
+	}
+	if cfg.MCPManifest != "/etc/george/mcp.toml" {
+		t.Errorf("MCPManifest = %q, want /etc/george/mcp.toml", cfg.MCPManifest)
+	}
+	if cfg.LLMMaxTokens != 4096 {
+		t.Errorf("LLMMaxTokens = %d, want 4096", cfg.LLMMaxTokens)
+	}
+	if cfg.HistoryMaxMessages != 200 {
+		t.Errorf("HistoryMaxMessages = %d, want 200", cfg.HistoryMaxMessages)
+	}
+	if cfg.HistoryMaxTokens != 32000 {
+		t.Errorf("HistoryMaxTokens = %d, want 32000", cfg.HistoryMaxTokens)
+	}
+	if !cfg.HistoryStripFillers {
+		t.Error("HistoryStripFillers = false, want true")
+	}
+	if cfg.ToolResultMaxChars != 6000 {
+		t.Errorf("ToolResultMaxChars = %d, want 6000", cfg.ToolResultMaxChars)
+	}
+	if cfg.ToolMaxIterations != 10 {
+		t.Errorf("ToolMaxIterations = %d, want 10", cfg.ToolMaxIterations)
+	}
+	if !cfg.ToolsEnabled {
+		t.Error("ToolsEnabled = false, want true")
+	}
+	if !cfg.WebSearchEnabled {
+		t.Error("WebSearchEnabled = false, want true")
+	}
+	if !cfg.MemoryEnabled {
+		t.Error("MemoryEnabled = false, want true")
+	}
+	if cfg.MemoryBackend != "builtin" {
+		t.Errorf("MemoryBackend = %q, want builtin", cfg.MemoryBackend)
+	}
+	if cfg.MemoryConsolidateMinutes != 30 {
+		t.Errorf("MemoryConsolidateMinutes = %d, want 30", cfg.MemoryConsolidateMinutes)
+	}
+	if !cfg.CronEnabled {
+		t.Error("CronEnabled = false, want true")
+	}
+	if !cfg.WatchEnabled {
+		t.Error("WatchEnabled = false, want true")
+	}
+	if cfg.WatchMax != 50 {
+		t.Errorf("WatchMax = %d, want 50", cfg.WatchMax)
+	}
+	if cfg.CronTZ != "America/Los_Angeles" {
+		t.Errorf("CronTZ = %q, want America/Los_Angeles", cfg.CronTZ)
+	}
+	if cfg.CronMaxJobs != 50 {
+		t.Errorf("CronMaxJobs = %d, want 50", cfg.CronMaxJobs)
+	}
+	if cfg.DailyPlannerAt != "07:10" {
+		t.Errorf("DailyPlannerAt = %q, want 07:10", cfg.DailyPlannerAt)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
+	}
+}
+
+func TestLoad_TelegramRequiresTokenAndAllowlist(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "telegram")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for missing telegram fields")
+	}
+	if !strings.Contains(err.Error(), "TELEGRAM_BOT_TOKEN") {
+		t.Errorf("error = %q, want TELEGRAM_BOT_TOKEN mention", err)
+	}
+
+	t.Setenv("TELEGRAM_BOT_TOKEN", "tok")
+	_, err = config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for missing allowlist")
+	}
+	if !strings.Contains(err.Error(), "TELEGRAM_ALLOWED_USERS") {
+		t.Errorf("error = %q, want TELEGRAM_ALLOWED_USERS mention", err)
+	}
+
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123,456")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TelegramAllowedUsers) != 2 {
+		t.Fatalf("TelegramAllowedUsers len = %d, want 2", len(cfg.TelegramAllowedUsers))
+	}
+	if cfg.TelegramAllowedUsers[0] != 123 || cfg.TelegramAllowedUsers[1] != 456 {
+		t.Errorf("TelegramAllowedUsers = %v, want [123 456]", cfg.TelegramAllowedUsers)
+	}
+
+	t.Setenv("PENDANT_MAILBOX_URL", "wss://x.workers.dev/ws/kit")
+	t.Setenv("PENDANT_BEARER", "tok")
+	t.Setenv("PENDANT_ALLOWED_USERS", "1182")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("telegram crane must ignore unused PENDANT_*: %v", err)
+	}
+	if cfg.Channel != config.ChannelTelegram {
+		t.Fatalf("Channel = %q", cfg.Channel)
+	}
+}
+
+func TestLoad_MissingRequiredLLM(t *testing.T) {
+	t.Setenv("CHANNEL", "stdio")
+	// Intentionally leave LLM_* unset / empty.
+	t.Setenv("LLM_BASE_URL", "")
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("LLM_MODEL", "")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for missing LLM_* vars")
+	}
+}
+
+func TestLoad_InvalidChannel(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "irc")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for invalid channel")
+	}
+	if !strings.Contains(err.Error(), "CHANNEL") {
+		t.Errorf("error = %q, want CHANNEL mention", err)
+	}
+}
+
+func TestLoad_SlackRequiresTokensAndAllowlist(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "slack")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "SLACK_BOT_TOKEN") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-1")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "SLACK_APP_TOKEN") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("SLACK_APP_TOKEN", "xapp-1")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "SLACK_ALLOWED_USERS") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("SLACK_ALLOWED_USERS", "U1, U2")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Channel != config.ChannelSlack || cfg.SlackAllowedUsers[1] != "U2" {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+func TestLoad_PendantRequiresURLBearerAllowlist(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "pendant")
+
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "PENDANT_MAILBOX_URL") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("PENDANT_MAILBOX_URL", "wss://x.workers.dev/ws/kit")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "PENDANT_BEARER") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("PENDANT_BEARER", "tok")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "PENDANT_ALLOWED_USERS") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("PENDANT_ALLOWED_USERS", "1182:ada@example.com, 1183")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Channel != config.ChannelPendant || cfg.PendantAllowedUsers[0] != "1182:ada@example.com" || cfg.PendantAllowedUsers[1] != "1183" {
+		t.Fatalf("%+v", cfg)
+	}
+	t.Setenv("PENDANT_ALLOWED_USERS", "ada@example.com")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PendantAllowedUsers[0] != "ada@example.com" {
+		t.Fatalf("email entry stripped: %+v", cfg.PendantAllowedUsers)
+	}
+}
+
+func TestLoad_DiscordRequiresTokenAndAllowlist(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "discord")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for missing discord fields")
+	}
+	if !strings.Contains(err.Error(), "DISCORD_BOT_TOKEN") {
+		t.Errorf("error = %q, want DISCORD_BOT_TOKEN mention", err)
+	}
+
+	t.Setenv("DISCORD_BOT_TOKEN", "tok")
+	_, err = config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for missing allowlist")
+	}
+	if !strings.Contains(err.Error(), "DISCORD_ALLOWED_USERS") {
+		t.Errorf("error = %q, want DISCORD_ALLOWED_USERS mention", err)
+	}
+
+	t.Setenv("DISCORD_ALLOWED_USERS", "111, 222")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Channel != config.ChannelDiscord {
+		t.Fatalf("Channel = %q", cfg.Channel)
+	}
+	if len(cfg.DiscordAllowedUsers) != 2 || cfg.DiscordAllowedUsers[0] != "111" || cfg.DiscordAllowedUsers[1] != "222" {
+		t.Fatalf("DiscordAllowedUsers = %v", cfg.DiscordAllowedUsers)
+	}
+}
+
+func TestLoad_MemoryBackendMCP(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	t.Setenv("MEMORY_BACKEND", "mcp:custom-memory")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MemoryBackend != "mcp:custom-memory" {
+		t.Errorf("MemoryBackend = %q, want mcp:custom-memory", cfg.MemoryBackend)
+	}
+}
+
+func TestLoad_InvalidMemoryBackend(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	t.Setenv("MEMORY_BACKEND", "redis")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for invalid memory backend")
+	}
+}
+
+func TestLoad_InvalidLogLevel(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	t.Setenv("LOG_LEVEL", "verbose")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for invalid log level")
+	}
+}
+
+func TestLoad_TelegramErrorReporting(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "telegram")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "tok")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "123")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TelegramErrorReporting != "off" {
+		t.Fatalf("default = %q, want off", cfg.TelegramErrorReporting)
+	}
+
+	t.Setenv("TELEGRAM_ERROR_REPORTING", "error")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TelegramErrorReporting != "error" {
+		t.Fatalf("got %q", cfg.TelegramErrorReporting)
+	}
+
+	t.Setenv("CHANNEL", "stdio")
+	t.Setenv("TELEGRAM_ERROR_REPORTING", "error")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "TELEGRAM_ERROR_REPORTING") {
+		t.Fatalf("want channel mismatch error, got %v", err)
+	}
+
+	t.Setenv("CHANNEL", "telegram")
+	t.Setenv("TELEGRAM_ERROR_REPORTING", "trace")
+	_, err = config.Load()
+	if err == nil || !strings.Contains(err.Error(), "TELEGRAM_ERROR_REPORTING") {
+		t.Fatalf("want invalid value error, got %v", err)
+	}
+}
+
+func TestLoad_Bounds(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	t.Setenv("HISTORY_MAX_MESSAGES", "0")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load: expected error for HISTORY_MAX_MESSAGES=0")
+	}
+}
+
+func TestLoad_MoreValidation(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+
+	cases := []struct {
+		key, val, want string
+	}{
+		{"LLM_MAX_TOKENS", "-1", "LLM_MAX_TOKENS"},
+		{"HISTORY_MAX_TOKENS", "0", "HISTORY_MAX_TOKENS"},
+		{"TOOL_RESULT_MAX_CHARS", "0", "TOOL_RESULT_MAX_CHARS"},
+		{"TOOL_MAX_ITERATIONS", "0", "TOOL_MAX_ITERATIONS"},
+		{"TOOL_SCHEMA_MAX_TOKENS", "-1", "TOOL_SCHEMA_MAX_TOKENS"},
+		{"TOOL_TRACE", "verbose", "TOOL_TRACE"},
+		{"LLM_SYSTEM_FOLD", "sideways", "LLM_SYSTEM_FOLD"},
+		{"MEMORY_CONSOLIDATE_MINUTES", "-1", "MEMORY_CONSOLIDATE_MINUTES"},
+		{"WATCH_MAX", "0", "WATCH_MAX"},
+		{"DAILY_PLANNER_AT", "morning", "DAILY_PLANNER_AT"},
+		{"MEMORY_BACKEND", "mcp:", "MEMORY_BACKEND"},
+		{"PERSONA_DIR", "   ", "PERSONA_DIR"},
+		{"DATA_DIR", "   ", "DATA_DIR"},
+		{"MCP_MANIFEST", "   ", "MCP_MANIFEST"},
+		{"LOG_LEVEL", "DEBUG", ""}, // valid after normalize
+	}
+	for _, tc := range cases {
+		t.Run(tc.key+"="+tc.val, func(t *testing.T) {
+			setRequiredLLM(t)
+			t.Setenv("CHANNEL", "stdio")
+			t.Setenv(tc.key, tc.val)
+			cfg, err := config.Load()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected err: %v", err)
+				}
+				if cfg.LogLevel != "debug" {
+					t.Fatalf("LogLevel=%q", cfg.LogLevel)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_SystemFold(t *testing.T) {
+	setRequiredLLM(t)
+	t.Setenv("CHANNEL", "stdio")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMSystemFold != "auto" {
+		t.Fatalf("default LLMSystemFold=%q want auto", cfg.LLMSystemFold)
+	}
+	t.Setenv("LLM_SYSTEM_FOLD", " ONE ")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMSystemFold != "one" {
+		t.Fatalf("LLMSystemFold=%q want one", cfg.LLMSystemFold)
+	}
+}

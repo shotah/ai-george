@@ -1,0 +1,164 @@
+package agent
+
+import (
+	"testing"
+
+	"github.com/shotah/george/internal/cron"
+	"github.com/shotah/george/internal/provider"
+	"github.com/shotah/george/internal/session"
+)
+
+func TestCronJobImpliesLiveTools(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{
+			name: "morning audit",
+			text: cron.JobUserPrefix + "Fetch Garmin sleep/HRV and present the Unified Morning Audit.",
+			want: true,
+		},
+		{
+			name: "calendar digest",
+			text: cron.JobUserPrefix + "Summarize calendar + work email for the past 8 hours.",
+			want: true,
+		},
+		{
+			name: "timecard reminder",
+			text: cron.JobUserPrefix + "Remind me to submit my timecard.",
+			want: false,
+		},
+		{
+			name: "wrapper alone is not live data",
+			text: cron.JobUserPrefix,
+			want: false,
+		},
+		{
+			name: "legacy prefix still splits",
+			text: "[cron] Scheduled job — do the following and reply with the result for the user:\n\nFetch Garmin sleep.",
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := cronJobImpliesLiveTools(tc.text); got != tc.want {
+				t.Fatalf("cronJobImpliesLiveTools(%q) = %v, want %v (body=%q)",
+					tc.text, got, tc.want, cronJobBody(tc.text))
+			}
+		})
+	}
+}
+
+func TestDropCronHistory(t *testing.T) {
+	t.Parallel()
+	in := []session.Message{
+		{Role: session.RoleUser, Content: "hey"},
+		{Role: session.RoleAssistant, Content: "hi"},
+		{Role: session.RoleUser, Content: cron.JobUserPrefix + "Fetch Garmin sleep"},
+		{Role: session.RoleAssistant, Content: "Sleep 81"},
+		{Role: session.RoleUser, Content: "[watch] New items from a subscription.\n\n- id=nws-1"},
+		{Role: session.RoleAssistant, Content: "NWS posted a wind advisory."},
+		{Role: session.RoleUser, Content: "what's up"},
+		{Role: session.RoleAssistant, Content: "nm"},
+	}
+	out := dropCronHistory(in)
+	if len(out) != 4 {
+		t.Fatalf("len=%d want 4: %+v", len(out), out)
+	}
+	if out[0].Content != "hey" || out[1].Content != "hi" || out[2].Content != "what's up" || out[3].Content != "nm" {
+		t.Fatalf("out=%+v", out)
+	}
+}
+
+func TestTurnSource(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{in: "[watch] New items", want: sourceWatch},
+		{in: "[cron] Scheduled job", want: sourceCron},
+		{in: cron.DailyPlannerPrefix + "plan the day", want: sourceCron},
+		{in: cron.ExamplesPingPrefix + "try /tools", want: sourceCron},
+		{in: "[reaction] 👍 on: earlier reply", want: sourceReaction},
+		{in: "hey", want: sourceUser},
+		{in: "  ", want: sourceUser},
+		{in: "", want: sourceUser},
+	}
+	for _, tc := range cases {
+		if got := turnSource(tc.in); got != tc.want {
+			t.Fatalf("turnSource(%q)=%q want %q", tc.in, got, tc.want)
+		}
+		switch turnSource(tc.in) {
+		case sourceUser, sourceCron, sourceWatch, sourceReaction:
+		default:
+			t.Fatalf("unknown-creep source %q from %q", turnSource(tc.in), tc.in)
+		}
+	}
+	if !cron.IsDailyPlannerTurn(cron.DailyPlannerPrefix + "plan the day") {
+		t.Fatal("planner prefix should be a planner turn")
+	}
+}
+
+func TestLastUserContent(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "persona"},
+		{Role: provider.RoleUser, Content: "older"},
+		{Role: provider.RoleAssistant, Content: "ok"},
+		{Role: provider.RoleUser, Content: "latest ask"},
+		{Role: provider.RoleSystem, Content: "[current time]"},
+	}
+	if got := lastUserContent(msgs); got != "latest ask" {
+		t.Fatalf("lastUserContent = %q", got)
+	}
+	// A kernel nudge rides as a user turn but is not the human's line.
+	nudged := append(msgs,
+		provider.Message{Role: provider.RoleAssistant, Content: "I'll pull that now."},
+		provider.Message{Role: provider.RoleUser, Content: harnessNudgePrefix + "No tool call was made."},
+	)
+	if got := lastUserContent(nudged); got != "latest ask" {
+		t.Fatalf("lastUserContent skipped nudge = %q", got)
+	}
+	if got := lastUserContent(nil); got != "" {
+		t.Fatalf("empty = %q", got)
+	}
+}
+
+func TestStripToolsFooter(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{in: "Sleep 81\n\n— tools: garmin__sleep_get", want: "Sleep 81"},
+		{in: "— tools: web_search", want: ""},
+		{in: "\n\n— tools: web_search", want: ""},
+		{in: "hello\n— tools: watch_list, cron_list", want: "hello"},
+		{in: "Sleep score 74 — from Garmin.", want: "Sleep score 74 — from Garmin."},
+		{in: "what does — tools: mean", want: "what does — tools: mean"},
+		{in: "", want: ""},
+	}
+	for _, tc := range cases {
+		if got := stripToolsFooter(tc.in); got != tc.want {
+			t.Fatalf("stripToolsFooter(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if !isToolsFooterOnly("— tools: web_search") || !isToolsFooterOnly("\n\n— tools: web_search\n") {
+		t.Fatal("footer-only not detected")
+	}
+	if isToolsFooterOnly("Sleep 81\n\n— tools: garmin__sleep_get") {
+		t.Fatal("body+footer should not be footer-only")
+	}
+	if isToolsFooterOnly("Sleep score 74 — from Garmin.") {
+		t.Fatal("em-dash prose is not a tools footer")
+	}
+	stored := storedAssistantReply("Sleep 81\n\n— tools: garmin__sleep_get")
+	if stored != "Sleep 81" {
+		t.Fatalf("storedAssistantReply = %q", stored)
+	}
+	if got := storedAssistantReply("— tools: web_search"); got != "— tools: web_search" {
+		t.Fatalf("footer-only store fallback = %q", got)
+	}
+}

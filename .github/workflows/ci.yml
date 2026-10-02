@@ -1,0 +1,102 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# contents:write needed to push the coverage badge + oauth-catch page to gh-pages on main.
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test + coverage
+        run: |
+          go test ./internal/... ./cmd/... ./examples/... -coverprofile=coverage.out -covermode=atomic -count=1
+          go tool cover -func=coverage.out | tee coverage.txt
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        env:
+          CGO_ENABLED: "0"
+        with:
+          version: v2.12.2
+
+      - name: Build (static)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags="-s -w" -o /tmp/george ./cmd/george
+          file /tmp/george
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.txt
+
+      - name: Generate coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          mkdir -p badges
+          chmod +x scripts/coverage-badge.sh
+          ./scripts/coverage-badge.sh coverage.out badges/coverage.svg
+
+      # gh-pages hosts:
+      #   badges/coverage.svg          → coverage badge
+      #   oauth-catch/index.html       → OAuth redirect catch page for chat /auth
+      # URL: https://shotah.github.io/george/oauth-catch/
+      - name: Push gh-pages (badge + oauth-catch)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          BADGE="${GITHUB_WORKSPACE}/badges/coverage.svg"
+          CATCH="${GITHUB_WORKSPACE}/docs/oauth-catch/index.html"
+          WORKDIR=$(mktemp -d)
+          cd "$WORKDIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          if git fetch --depth 1 origin gh-pages; then
+            git checkout -B gh-pages FETCH_HEAD
+          else
+            git checkout --orphan gh-pages
+            # Orphan branches start with everything staged; clear so we only publish what we copy.
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p badges oauth-catch
+          cp "$BADGE" badges/coverage.svg
+          cp "$CATCH" oauth-catch/index.html
+          # Keep Pages from treating this as a Jekyll site (would ignore some paths).
+          touch .nojekyll
+
+          git add badges/coverage.svg oauth-catch/index.html .nojekyll
+          if git diff --staged --quiet; then
+            echo "No gh-pages change; skipping push."
+          else
+            git commit -m "chore: update gh-pages (badge + oauth-catch) [skip ci]"
+            git push origin HEAD:gh-pages
+          fi

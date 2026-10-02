@@ -1,0 +1,38 @@
+# Sample compose — one container = one persona + one model + one memory volume.
+# Copy .env.example → .env and fill secrets before `docker compose up`.
+#
+# Milestone 1 (stdio REPL):
+#   set CHANNEL=stdio in .env, then:
+#   docker compose run --rm -it george
+
+services:
+  george:
+    build:
+      context: .
+      args:
+        VERSION: local
+        COMMIT: local
+        DATE: local
+    image: george:local
+    env_file: .env
+    environment:
+      CHANNEL: stdio
+      HOME: /data
+      PERSONA_DIR: /persona
+      DATA_DIR: /data
+      MCP_MANIFEST: /etc/george/mcp.toml
+    volumes:
+      # Writable for SELF.md (self_note / /new distill). Only that file is agent-written.
+      - ./deploy/persona:/persona
+      - ./deploy/mcp.toml:/etc/george/mcp.toml:ro
+      - ./deploy/data:/data
+      - ./deploy/secrets:/secrets:ro
+    # No ports — outbound only (Telegram long-poll). Healthcheck is an exit code.
+    # Exec form required: distroless has no shell (do not use CMD-SHELL).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/george", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

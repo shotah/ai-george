@@ -1,0 +1,268 @@
+package provider_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/shotah/george/internal/provider"
+)
+
+func TestClient_CompleteStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}`,
+			`{"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"lo"}}]}`,
+			`{"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	var seen []string
+	got, err := c.CompleteStream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	}, func(content, _ string) error {
+		seen = append(seen, content)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content != "Hello" {
+		t.Fatalf("Content=%q", got.Content)
+	}
+	if got.FinishReason != "stop" {
+		t.Fatalf("FinishReason=%q, want stop", got.FinishReason)
+	}
+	if len(seen) < 2 || seen[len(seen)-1] != "Hello" {
+		t.Fatalf("seen=%v", seen)
+	}
+}
+
+// Gemini's compat layer answers a bad turn shape with a 400 whose body is a
+// JSON array. openai-go only lifts a top-level "error" object into the
+// message, so the SDK string ends at `400 Bad Request` and the reason is
+// lost. Both call paths must put the body back so the log explains itself.
+func TestClient_BadRequest_ErrorCarriesBody(t *testing.T) {
+	const geminiBody = `[{"error":{"code":400,"message":"Please ensure that function call turn comes immediately after a user turn or after a function response turn.","status":"INVALID_ARGUMENT"}}]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(geminiBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	req := provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}}
+
+	_, err := c.CompleteStream(context.Background(), req, func(_, _ string) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "function call turn comes immediately after a user turn") {
+		t.Fatalf("stream err lost the body: %v", err)
+	}
+	_, err = c.Complete(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "INVALID_ARGUMENT") {
+		t.Fatalf("complete err lost the body: %v", err)
+	}
+}
+
+// The OpenAI object shape already rides in the SDK message; it is not
+// appended twice.
+func TestClient_BadRequest_ObjectBodyNotDuplicated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"unknown model zzz","type":"invalid_request_error"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	_, err := c.Complete(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err == nil || strings.Count(err.Error(), "unknown model zzz") != 1 || strings.Contains(err.Error(), " body: ") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClient_CompleteStream_Thinking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","reasoning":"Let me "}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"reasoning":"think."}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"content":"Hi"}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	var lastContent, lastThinking string
+	got, err := c.CompleteStream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	}, func(content, thinking string) error {
+		lastContent, lastThinking = content, thinking
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Thinking != "Let me think." {
+		t.Fatalf("Thinking=%q", got.Thinking)
+	}
+	if got.Content != "Hi" {
+		t.Fatalf("Content=%q", got.Content)
+	}
+	if lastThinking != "Let me think." || lastContent != "Hi" {
+		t.Fatalf("progress content=%q thinking=%q", lastContent, lastThinking)
+	}
+}
+
+func TestClient_CompleteStream_ToolCallsSkipText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"demo__echo","arguments":""}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"x\":1}"}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	called := 0
+	got, err := c.CompleteStream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "go"}},
+		Tools:    []provider.ToolDef{{Name: "demo__echo", Parameters: map[string]any{"type": "object"}}},
+	}, func(string, string) error {
+		called++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 0 {
+		t.Fatalf("onProgress called %d times for tool-only stream", called)
+	}
+	if len(got.ToolCalls) != 1 || got.ToolCalls[0].Name != "demo__echo" {
+		t.Fatalf("toolcalls=%+v", got.ToolCalls)
+	}
+	if !strings.Contains(got.ToolCalls[0].Arguments, "x") {
+		t.Fatalf("args=%q", got.ToolCalls[0].Arguments)
+	}
+}
+
+// Gemini often streams parallel tool calls all with index=0 but distinct ids.
+func TestClient_CompleteStream_ParallelToolsSameIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"id":"1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"a1","type":"function","function":{"name":"ytmusic__search_tracks","arguments":""}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"x\"}"}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"b2","type":"function","function":{"name":"cast__devices_list","arguments":""}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+			`{"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	got, err := c.CompleteStream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "play"}},
+		Tools: []provider.ToolDef{
+			{Name: "ytmusic__search_tracks", Parameters: map[string]any{"type": "object"}},
+			{Name: "cast__devices_list", Parameters: map[string]any{"type": "object"}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ToolCalls) != 2 {
+		t.Fatalf("want 2 tool calls, got %+v", got.ToolCalls)
+	}
+	if got.ToolCalls[0].Name != "ytmusic__search_tracks" || got.ToolCalls[0].ID != "a1" {
+		t.Fatalf("call0=%+v", got.ToolCalls[0])
+	}
+	if got.ToolCalls[1].Name != "cast__devices_list" || got.ToolCalls[1].ID != "b2" {
+		t.Fatalf("call1=%+v", got.ToolCalls[1])
+	}
+	if strings.Contains(got.ToolCalls[0].Name, "cast") || strings.Contains(got.ToolCalls[1].Name, "ytmusic") {
+		t.Fatalf("names mashed: %+v", got.ToolCalls)
+	}
+}
+
+func TestClient_CompleteStream_UsageAndIncludeUsage(t *testing.T) {
+	var reqBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"id":"1","object":"chat.completion.chunk","model":"gpt-stream","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}`,
+			`{"id":"1","object":"chat.completion.chunk","model":"gpt-stream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`{"id":"1","object":"chat.completion.chunk","model":"gpt-stream","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":1,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":1}}}`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := provider.New(srv.URL, "k", "m")
+	got, err := c.CompleteStream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	so, _ := reqBody["stream_options"].(map[string]any)
+	if so == nil || so["include_usage"] != true {
+		t.Fatalf("stream_options.include_usage missing: %v", reqBody["stream_options"])
+	}
+	if got.Content != "Hi" || got.FinishReason != "stop" || got.Model != "gpt-stream" {
+		t.Fatalf("result %+v", got)
+	}
+	u := got.Usage
+	if !u.Present() || u.PromptTokens != 9 || u.CompletionTokens != 1 || u.TotalTokens != 10 {
+		t.Fatalf("usage %+v", u)
+	}
+	if u.CachedTokens != 4 || u.ReasoningTokens != 1 {
+		t.Fatalf("details %+v", u)
+	}
+}

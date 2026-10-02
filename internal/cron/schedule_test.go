@@ -1,0 +1,91 @@
+package cron_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/shotah/george/internal/cron"
+)
+
+func TestParseSchedule_RelativeAndDaily(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, loc)
+
+	p, err := cron.ParseSchedule("in 30m", "once", loc, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Kind != cron.KindOnce {
+		t.Fatalf("kind=%s", p.Kind)
+	}
+	want := now.Add(30 * time.Minute).UTC()
+	if !p.NextRun.Equal(want) {
+		t.Fatalf("next=%s want %s", p.NextRun, want)
+	}
+
+	p, err = cron.ParseSchedule("17:00", "daily", loc, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Kind != cron.KindDaily || p.Expr != "17:00" {
+		t.Fatalf("%+v", p)
+	}
+	if p.NextRun.In(loc).Hour() != 17 {
+		t.Fatalf("hour=%d", p.NextRun.In(loc).Hour())
+	}
+
+	p, err = cron.ParseSchedule("every:1h", "", loc, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Kind != cron.KindEvery {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestAdvanceNext(t *testing.T) {
+	from := time.Date(2026, 7, 22, 17, 0, 0, 0, time.UTC)
+	_, _, ok, err := cron.AdvanceNext(cron.KindOnce, from.Format(time.RFC3339Nano), "UTC", from)
+	if err != nil || ok {
+		t.Fatalf("once should not repeat: ok=%v err=%v", ok, err)
+	}
+	next, _, ok, err := cron.AdvanceNext(cron.KindDaily, "17:00", "UTC", from)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if next.In(time.UTC).Day() != 23 {
+		t.Fatalf("next day=%d", next.Day())
+	}
+
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, _, ok, err = cron.AdvanceNext(cron.KindDaily, "09:00", "America/Los_Angeles", from)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if next.In(loc).Hour() != 9 {
+		t.Fatalf("hour=%d", next.In(loc).Hour())
+	}
+	if _, _, _, err := cron.AdvanceNext(cron.KindDaily, "09:00", "Not/AZone", from); err == nil {
+		t.Fatal("expected bad timezone error")
+	}
+}
+
+func TestAdvanceNext_DailyDSTCalendarDay(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// US spring forward 2026-03-08: 02:00 → 03:00. Calendar +1 day must keep wall hour.
+	from := time.Date(2026, 3, 8, 6, 0, 0, 0, loc)
+	next, _, ok, err := cron.AdvanceNext(cron.KindDaily, "06:00", "America/Los_Angeles", from)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	got := next.In(loc)
+	if got.Day() != 9 || got.Hour() != 6 {
+		t.Fatalf("want Mon 06:00 local after spring forward, got %s", got.Format(time.RFC3339))
+	}
+}
