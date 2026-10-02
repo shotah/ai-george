@@ -159,7 +159,7 @@ func New(opts Options) (*Agent, error) {
 	}
 	maxIters := opts.MaxToolIters
 	if maxIters < 1 {
-		maxIters = 10
+		maxIters = 25
 	}
 	toolTrace := strings.ToLower(strings.TrimSpace(opts.ToolTrace))
 	switch toolTrace {

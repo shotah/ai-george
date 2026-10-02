@@ -96,7 +96,7 @@ The eval sets `OLLAMA_CONTEXT_LENGTH=32768`. These defaults were sized for Gemin
 | --- | --- | --- |
 | `HISTORY_MAX_TOKENS` | `32000` | History alone can fill the window before the persona, the schemas, and the tool results are added. |
 | `TOOL_RESULT_MAX_CHARS` | `6000` | About 1.5k tokens. That's fine for one file. A parallel read of four files is about 6k. |
-| `TOOL_MAX_ITERATIONS` | `10` | `edit_then_check` already has a budget of 5. A failing test plus one fix is 7 or more. |
+| `TOOL_MAX_ITERATIONS` | `25` (was `10`) | Done. Local tools cost nothing, and three parallel rounds (read, patch, test) plus fix-ups fit well under it. The cap only catches loops; per-fixture `round_budget` still flags waste in the eval. |
 | `STREAM_REPLIES`, `SHOW_THINKING`, `TOOL_TRACE`, `SPINUP_NOTICE_MS`, `COALESCE_SETTLE_MS` | chat-bubble tuning | Keep the ones that mean something on stdio, and delete the rest. |
 
 Set the new defaults from a measured reading: the `/tokens` output across one long coding session on the pinned model. Do not guess them.
