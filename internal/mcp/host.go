@@ -166,7 +166,6 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 				State:  ServerSkipped,
 				Note:   clipHealthNote(err.Error()),
 				Reason: ReasonOf(err),
-				Auth:   spec.AuthConfigured(),
 				Prefix: prefixFor(spec),
 			})
 			h.log.Error("mcp server boot skipped",
@@ -760,7 +759,7 @@ func defaultDial(ctx context.Context, spec ServerSpec, stderr io.Writer) (Conn, 
 	}
 	// Do not bind the child to the boot/signal context: SIGTERM must let the
 	// agent finish the in-flight turn before Host.Close kills MCP children.
-	cmd := exec.Command(spec.Command, ExpandAuthArgs(spec.Args)...) //nolint:gosec // G204: command comes from operator mcp.toml
+	cmd := exec.Command(spec.Command, ExpandArgs(spec.Args)...) //nolint:gosec // G204: command comes from operator mcp.toml
 	cmd.Env = append(os.Environ(), spec.Env...)
 	cmd.Stderr = stderr
 	ownProcessGroup(cmd)

@@ -509,7 +509,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	var volatileEst int
 	var recoveries, toolCalls, maxBatch, promptEstSum, genEstSum int
 	var native provider.Usage
-	var usageRounds int
+	var usageRounds, peakPrompt int
 	var lastModel, lastFinish, lastTier string
 	var usedLanding bool
 	outcomeHint := ""
@@ -564,7 +564,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		}
 		if native.Present() {
 			perf = append(perf, nativeUsageAttrs(native)...)
-			perf = append(perf, "usage_rounds", usageRounds)
+			perf = append(perf, "usage_rounds", usageRounds, "peak_prompt_tokens", peakPrompt)
 		}
 		a.log.Info("turn perf", perf...)
 		if a.perf != nil {
@@ -695,6 +695,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		if res.Usage.Present() {
 			native = native.Add(res.Usage)
 			usageRounds++
+			peakPrompt = max(peakPrompt, res.Usage.PromptTokens)
 		}
 		if res.Model != "" {
 			lastModel = res.Model

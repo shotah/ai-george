@@ -47,7 +47,10 @@ type Config struct {
 	MCPManifest string `env:"MCP_MANIFEST"`
 
 	HistoryMaxMessages int `env:"HISTORY_MAX_MESSAGES" envDefault:"200"`
-	HistoryMaxTokens   int `env:"HISTORY_MAX_TOKENS" envDefault:"32000"` // estimated (chars/4); older turns are dropped
+	// HistoryMaxTokens is estimated (chars/4); older turns are dropped. Sized
+	// for a 32k window: about 1.3 real tokens per estimate, beside ~6k of
+	// persona and schemas, two whole tool rounds, and the completion.
+	HistoryMaxTokens int `env:"HISTORY_MAX_TOKENS" envDefault:"8000"`
 	// HistoryStripFillers drops a small function-word list from older user
 	// history at prompt time. Last 40 messages stay verbatim; assistant turns
 	// are never stripped. SQLite stays verbatim.

@@ -41,7 +41,7 @@ Each row comes out whole: the package, its wiring in `cmd/george/run.go`, its co
 | Container and daemon | `Dockerfile`, `compose.yml`, `deploy/`, `docker.yml`, `dockerhub-description.yml`, `docs/deploy-*.md`, `docs/dockerhub.md` | none | george is a CLI. See [Where it lives](#where-it-lives-no-docker). |
 | Health and status | `internal/heartbeat/`, `internal/doctor/`, `george status` | none | They exist for a Docker healthcheck and `docker exec`. Nothing is left running to check. |
 | SIGTERM drain, SIGHUP reload | `internal/drain/`, `reload_unix.go`, `reload_stub.go` | none | Long-lived-process signals. Ctrl-C replaces them (see below). |
-| `george auth` | `cmd/george/auth.go`, `auth_*` in the manifest | none | OAuth subprocesses for the assistant plugins. `github-mcp` reads `GITHUB_TOKEN`. |
+| `george auth` | `cmd/george/auth.go`, `internal/mcp/auth.go`, `auth_*` in the manifest, `docs/oauth-catch/` | none | OAuth subprocesses for the assistant plugins. `github-mcp` reads `GITHUB_TOKEN`. Done: all gone; an old manifest with `auth_*` still loads. |
 
 Once the four mouths are gone, `go mod tidy` should drop `discordgo`, `go-telegram/bot`, `slack-go/slack`, `gorilla/websocket`, and `goldmark`. Check the result. Do not assume it.
 
@@ -94,12 +94,12 @@ The eval sets `OLLAMA_CONTEXT_LENGTH=32768`. These defaults were sized for Gemin
 
 | Env | Now | Problem |
 | --- | --- | --- |
-| `HISTORY_MAX_TOKENS` | `32000` | History alone can fill the window before the persona, the schemas, and the tool results are added. |
-| `TOOL_RESULT_MAX_CHARS` | `6000` | About 1.5k tokens. That's fine for one file. A parallel read of four files is about 6k. |
+| `HISTORY_MAX_TOKENS` | `8000` (was `32000`) | Done. History alone could fill the window before the persona, the schemas, and the tool results. Set from the reading below. |
+| `TOOL_RESULT_MAX_CHARS` | `6000` | Kept. About 2k real tokens. That's fine for one file. A parallel read of four files is about 8k, which still fits beside 8000 of history. |
 | `TOOL_MAX_ITERATIONS` | `25` (was `10`) | Done. Local tools cost nothing, and three parallel rounds (read, patch, test) plus fix-ups fit well under it. The cap only catches loops; per-fixture `round_budget` still flags waste in the eval. |
 | `STREAM_REPLIES`, `SHOW_THINKING`, `TOOL_TRACE`, `SPINUP_NOTICE_MS`, `COALESCE_SETTLE_MS` | chat-bubble tuning | Keep the ones that mean something on stdio, and delete the rest. |
 
-Set the new defaults from a measured reading: the `/tokens` output across one long coding session on the pinned model. Do not guess them.
+Set the new defaults from a measured reading: the `/tokens` output across one long coding session on the pinned model. Do not guess them. The reading: ten coding tasks on `qwen3.6:35b-a3b-coding` at `32768`. `/tokens` standing was 4.4k estimated (persona 1.5k, schemas 2.4k); Ollama counted 6.0k real prompt tokens on a plain turn, so one estimate is about 1.3 real tokens. The largest round (`peak_prompt_tokens` on `turn perf`) was 8.6k, in a seven-round turn. 8000 of history is about 10.5k real; with 6k fixed, 4k for the completion, and about 12k for two whole tool rounds, that fills the window.
 
 ### Config
 
@@ -160,7 +160,7 @@ The coding REPL has these instead:
 
 ## Goldens first
 
-The only free golden of the full request is `TestPendantInbound_CompleterPayload`, and it starts from pendant inbound JSON (`testdata/pendant/`). Before pendant is deleted, add a stdio-inbound golden that covers the same path: stdin line, `Handle`, the Completer request, and the HTTP body through `prompt_wire_test.go`. Then delete the pendant goldens. Each removal phase below ends with `go test -update` and a reviewed golden diff. Read the diff. That is the check that the prompt lost only what you meant to remove.
+The only free golden of the full request is `TestPendantInbound_CompleterPayload`, and it starts from pendant inbound JSON (`testdata/pendant/`). Before pendant is deleted, add a stdio-inbound golden that covers the same path: stdin line, `Handle`, the Completer request, and the HTTP body through `prompt_wire_test.go`. Then delete the pendant goldens. Each removal phase below ends with `go test -update` and a reviewed golden diff. Read the diff. That is the check that the prompt lost only what you meant to remove. Done: the pendant goldens are gone, and the full-request goldens are `TestStdioInbound_CompleterPayload` and `TestStdioInbound_WireBody` (`internal/agent/testdata/stdio/`).
 
 ## Evals
 

@@ -139,7 +139,7 @@ directory.
 | `DATA_DIR` | no | `~/.local/share/george` (`XDG_DATA_HOME`) |
 | `MCP_MANIFEST` | no | `$GEORGE_CONFIG_DIR/mcp.toml` |
 | `HISTORY_MAX_MESSAGES` | no | `200` |
-| `HISTORY_MAX_TOKENS` | no | `32000` (chars/4 estimate; older turns fold into `Facts:` / `Voice:`) |
+| `HISTORY_MAX_TOKENS` | no | `8000` (chars/4 estimate; the oldest turns are dropped, no completion) |
 | `HISTORY_STRIP_FILLERS` | no | `true` (prompt-only; last 40 messages verbatim; assistant never stripped) |
 | `TOOL_RESULT_MAX_CHARS` | no | `6000` |
 | `TOOL_MAX_ITERATIONS` | no | `25` (then one no-tools landing call) |
@@ -161,9 +161,11 @@ directory.
 Source of truth is `internal/config/config.go`. Add a variable there in the
 same change as this table.
 
-`HISTORY_MAX_TOKENS=32000` and `TOOL_RESULT_MAX_CHARS=6000` were sized for a
-cloud window. The eval sets `OLLAMA_CONTEXT_LENGTH=32768`. Resetting those
-two from a measured `/tokens` reading is still open
+`HISTORY_MAX_TOKENS=8000` comes from a measured ten-task session on the
+eval's 32k window (`OLLAMA_CONTEXT_LENGTH=32768`): persona and schemas are
+about 6k real tokens, one estimate is about 1.3 real tokens, and the rest is
+left for two whole tool rounds and the completion. Raise it with the window.
+`TOOL_RESULT_MAX_CHARS=6000` stays
 ([coding-agent-plan.md](coding-agent-plan.md#defaults-that-fight-a-32k-window)).
 
 ### MCP manifest

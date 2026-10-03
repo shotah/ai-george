@@ -84,7 +84,7 @@ func hasToolDef(defs []provider.ToolDef, name string) bool {
 
 func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 	t.Helper()
-	for _, re := range []string{e.ReplyRegex, e.ReplyNot} {
+	for _, re := range []string{e.ReplyRegex, e.ReplyNot, e.ToolStatsRegex} {
 		if re == "" {
 			continue
 		}
@@ -107,9 +107,11 @@ func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 			t.Errorf("%s: bad args_regex %q: %v", name, c.ArgsRegex, err)
 		}
 	}
-	for path, re := range e.Files {
-		if _, err := regexp.Compile(re); err != nil {
-			t.Errorf("%s: files %s: bad regex %q: %v", name, path, re, err)
+	for _, files := range []map[string]string{e.Files, e.FilesNot} {
+		for path, re := range files {
+			if _, err := regexp.Compile(re); err != nil {
+				t.Errorf("%s: files %s: bad regex %q: %v", name, path, re, err)
+			}
 		}
 	}
 	for _, alt := range e.AnyOf {
@@ -170,7 +172,7 @@ func TestEvalFixtures_WellFormed(t *testing.T) {
 				t.Errorf("%s: live %q needs to be in tools_from for its real defs", fx.Name, server)
 			}
 		}
-		if len(fx.Expect.Files) > 0 && len(fx.Live) == 0 {
+		if len(fx.Expect.Files)+len(fx.Expect.FilesNot) > 0 && len(fx.Live) == 0 {
 			t.Errorf("%s: files expectations need a live server to change the workspace", fx.Name)
 		}
 		compileEvalRegexes(t, fx.Name, fx.Expect)

@@ -1,0 +1,42 @@
+{
+  "name": "mangled_names",
+  "why": "A mangled MCP name still runs the real tool. The scripted first round sends a dot for the separator and a hyphen after the server, which the host repairs; and a near miss, which comes back with the closest names so the model retries it right. Every code in the reply comes from a real read.",
+  "inbound": "Read a.txt, b.txt, and c.txt, then reply with what each file says, in that order, comma separated.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "live": ["fs"],
+  "workspace": {
+    "a.txt": "alpha-7\n",
+    "b.txt": "bravo-3\n",
+    "c.txt": "charlie-9\n"
+  },
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "by_args": [
+        { "args_regex": "a\\.txt", "result": "alpha-7\n" },
+        { "args_regex": "b\\.txt", "result": "bravo-3\n" },
+        { "args_regex": "c\\.txt", "result": "charlie-9\n" }
+      ]
+    }
+  ],
+  "script": [
+    {
+      "tool_calls": [
+        { "name": "fs.file_get", "args": { "path": "a.txt" } },
+        { "name": "fs-file_get", "args": { "path": "b.txt" } },
+        { "name": "fs__file_read", "args": { "path": "c.txt" } }
+      ]
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "tools_called": [
+      { "name": "fs.file_get", "args_regex": "a\\.txt" },
+      { "name": "fs-file_get", "args_regex": "b\\.txt" },
+      { "name": "fs__file_get", "args_regex": "c\\.txt" }
+    ],
+    "reply_regex": "(?s)alpha-7.*bravo-3.*charlie-9",
+    "toolstats_regex": "prefix_alias=[2-9]"
+  }
+}

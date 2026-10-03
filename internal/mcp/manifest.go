@@ -41,11 +41,6 @@ type ServerSpec struct {
 	// polls, retries). Over it, the tool returns a refusal that says when
 	// the budget resets. See ParseBudget.
 	Budget string `toml:"budget"`
-	// AuthCommand / AuthArgs declare how to (re)authorize this server.
-	// Used by `george auth <name>`. If AuthArgs is set and AuthCommand is
-	// empty, Command is used. Omit both when the server has no auth flow.
-	AuthCommand string   `toml:"auth_command"`
-	AuthArgs    []string `toml:"auth_args"`
 
 	// DownloadURL is an optional HTTP(S) URL of a binary archive for
 	// `george tools-fetch`. Ignored by the runtime host. Source-agnostic (GitHub, GitLab, S3, …).
@@ -57,26 +52,17 @@ type ServerSpec struct {
 	DownloadTag string `toml:"download_tag"`
 }
 
-// AuthConfigured reports whether this server declares an auth subprocess.
-func (s ServerSpec) AuthConfigured() bool {
-	return strings.TrimSpace(s.AuthCommand) != "" || len(s.AuthArgs) > 0
-}
-
-// AuthCmd returns the executable and args for `george auth`.
-// AuthCommand defaults to Command when only AuthArgs is set.
-func (s ServerSpec) AuthCmd() (command string, args []string, ok bool) {
-	if !s.AuthConfigured() {
-		return "", nil, false
+// ExpandArgs replaces $VAR and ${VAR} in server args from the process env.
+// Unset variables expand to empty strings.
+func ExpandArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
 	}
-	command = strings.TrimSpace(s.AuthCommand)
-	if command == "" {
-		command = strings.TrimSpace(s.Command)
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = os.Expand(a, os.Getenv)
 	}
-	if command == "" {
-		return "", nil, false
-	}
-	args = append([]string(nil), s.AuthArgs...)
-	return command, args, true
+	return out
 }
 
 // LoadManifest reads and validates a TOML MCP manifest.

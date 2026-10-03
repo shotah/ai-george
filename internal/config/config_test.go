@@ -57,8 +57,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.HistoryMaxMessages != 200 {
 		t.Errorf("HistoryMaxMessages = %d, want 200", cfg.HistoryMaxMessages)
 	}
-	if cfg.HistoryMaxTokens != 32000 {
-		t.Errorf("HistoryMaxTokens = %d, want 32000", cfg.HistoryMaxTokens)
+	if cfg.HistoryMaxTokens != 8000 {
+		t.Errorf("HistoryMaxTokens = %d, want 8000", cfg.HistoryMaxTokens)
 	}
 	if !cfg.HistoryStripFillers {
 		t.Error("HistoryStripFillers = false, want true")

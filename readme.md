@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/shotah/george/actions/workflows/ci.yml"><img src="https://github.com/shotah/george/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/shotah/george/actions/workflows/ci.yml"><img src="https://github.com/shotah/george/raw/gh-pages/badges/coverage.svg" alt="Coverage"></a>
+  <a href="https://github.com/shotah/ai-george/actions/workflows/ci.yml"><img src="https://github.com/shotah/ai-george/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/shotah/ai-george/actions/workflows/ci.yml"><img src="https://github.com/shotah/ai-george/raw/gh-pages/badges/coverage.svg" alt="Coverage"></a>
 </p>
 
 > **george** — a coding agent for your terminal. One process, one local

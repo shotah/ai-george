@@ -4,10 +4,10 @@ Requests for the four coding servers. Each comes from a live gate run on `qwen3-
 
 Run a check with `make integration-test EVAL_ARGS='-eval.n=3 -eval.only=<fixture>'`. The eval fetches each server's `latest` release once and caches it; clear `/tmp/george-eval-mcp` after a release.
 
-Status, on `fs` 0.0.4, `git` 0.0.3, `shell` 0.0.2, `github` 0.0.3:
+Status, on `fs` 0.0.5, `git` 0.0.3, `shell` 0.0.2, `github` 0.0.3:
 
 - Seen working in gate logs: 1 (the model renames with `old`/`new`, `parallel_patches` 5/5), 2 (`new is required, e.g. …`, fixed the next round), 3 (patch results now echo the change), and 6 (`commit_only_when_asked` 5/5, no `stage_update`).
-- Shipped, but no gate run has hit it yet: 4 (hunk mismatch lines), 5 (diff shape errors; the model now uses `old`/`new`, not diffs), and 7 (`GITHUB_TOKEN` message).
+- Shipped, but no gate run has hit it yet: 4 (hunk mismatch lines), 5 (diff shape errors; the model now uses `old`/`new`, not diffs), 7 (`GITHUB_TOKEN` message), and 8 (a leading slash means the root).
 
 ## `fs-mcp`
 
@@ -57,6 +57,14 @@ Expand `file_patch` instead of adding a `file_replace` tool. The host suggests a
 - A bad `@@` header: name the line and show the expected form, `@@ -4,6 +4,6 @@`.
 
 **Check.** On `qwen3.6:35b-a3b-coding`, `parallel_patches` stays within its budget of 4 rounds (read, patch, test, reply).
+
+### 8. A leading slash means the root
+
+**What happens.** In `mangled_names`, the retry after an unknown tool name sent `fs__file_get {"path":"/c.txt"}` and got `tool error: path escapes workspace`. The file is `c.txt` at the root. It cost a round, and the model then fell back to the mangled spelling that had worked.
+
+**Change.** Read a path that starts with `/` and is not under `--root` as relative to the root (`/c.txt` is `<root>/c.txt`). An absolute path that is under the root stays as it is. `..` that leaves the root is still refused.
+
+**Check.** `mangled_names` at `-eval.n=5` shows no `path escapes workspace` error. Shipped in `fs-mcp` 0.0.5. The first reading was 5/5 with no such error, but no run sent a leading slash, so the fix itself hasn't been hit yet.
 
 ## `git-mcp`
 

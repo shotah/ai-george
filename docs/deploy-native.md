@@ -112,7 +112,7 @@ journalctl -u ollama -f
 | Lever | Where | Effect |
 | --- | --- | --- |
 | Stable prompt prefix | already the assembly order | The cached prefix is not re-billed as prefill when the tail is what changed |
-| `OLLAMA_CONTEXT_LENGTH` | Ollama's environment. The eval uses `32768` | Ollama's default `num_ctx` is small. Overflow shifts the context and re-prefills every turn. `HISTORY_MAX_TOKENS` still defaults to `32000`, which can fill that window before schemas and tool results are added |
+| `OLLAMA_CONTEXT_LENGTH` | Ollama's environment. The eval uses `32768` | Ollama's default `num_ctx` is small. Overflow shifts the context and re-prefills every turn. `HISTORY_MAX_TOKENS` defaults to `8000`, sized for `32768`; raise both together |
 | `OLLAMA_KEEP_ALIVE=-1` | same | The weights stay resident. `ollama ps` should show `100% GPU` |
 | `LLM_REASONING_EFFORT=none` | `~/.config/george/env` | Thinking tokens decode at full price before any tool runs. This is the template default |
 | `TOOL_RESULT_MAX_CHARS` | same, default `6000` | A result is re-sent on later rounds of the turn, so the cap multiplies prefill. The last two rounds stay whole; older ones collapse to a one-line marker |

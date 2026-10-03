@@ -671,7 +671,7 @@ func TestHost_CallSkippedServerClassified(t *testing.T) {
 [[server]]
 name = "google"
 command = "unused"
-auth_args = ["auth"]
+auth_args = ["auth"]  # retired key: an older manifest still loads
 
 [[server]]
 name = "math"
@@ -716,7 +716,7 @@ command = "unused"
 			google = row
 		}
 	}
-	if google.State != mcp.ServerSkipped || google.Reason != mcp.ReasonNoOAuth || !google.Auth {
+	if google.State != mcp.ServerSkipped || google.Reason != mcp.ReasonNoOAuth {
 		t.Fatalf("%#v", google)
 	}
 }

@@ -1,0 +1,33 @@
+{
+  "name": "expand_dont_copy",
+  "why": "A new need on an existing function grows that function (an optional parameter, an options value, or the old name delegating to the new one). A near-copy of the loop beside it (a second fn() call) fails, whatever the tests say.",
+  "inbound": "Some callers of Retry in retry.go need 5 attempts instead of 3. Make that possible without breaking the callers that use Retry today, then run go test ./...",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "live": ["fs", "shell"],
+  "workspace": {
+    "go.mod": "module retry\n\ngo 1.22\n",
+    "retry.go": "package retry\n\n// Retry calls fn until it returns nil, at most 3 times, and returns the last error.\nfunc Retry(fn func() error) error {\n\tvar err error\n\tfor i := 0; i < 3; i++ {\n\t\tif err = fn(); err == nil {\n\t\t\treturn nil\n\t\t}\n\t}\n\treturn err\n}\n",
+    "retry_test.go": "package retry\n\nimport (\n\t\"errors\"\n\t\"testing\"\n)\n\nfunc TestRetry_StopsAtThree(t *testing.T) {\n\tn := 0\n\terr := Retry(func() error { n++; return errors.New(\"no\") })\n\tif err == nil || n != 3 {\n\t\tt.Fatalf(\"n=%d err=%v\", n, err)\n\t}\n}\n"
+  },
+  "tools": [
+    { "name": "fs__file_get", "result": "package retry\n" },
+    { "name": "fs__file_patch", "result": "patched retry.go\n" },
+    { "name": "shell__command_run", "result": "exit 0\nok  \tretry\t0.002s\n" }
+  ],
+  "expect": {
+    "round_budget": 4,
+    "tools_called": [
+      { "name": "fs__file_patch", "args_regex": "retry\\.go" },
+      { "name": "shell__command_run", "args_regex": "go test" }
+    ],
+    "tools_not_called": ["git__commit_create", "git__stage_update"],
+    "files": {
+      "retry.go": "func Retry\\(",
+      "retry_test.go": "TestRetry_StopsAtThree"
+    },
+    "files_not": {
+      "retry.go": "(?s)\\bfn\\(\\).*\\bfn\\(\\)"
+    }
+  }
+}

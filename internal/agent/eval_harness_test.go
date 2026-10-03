@@ -31,6 +31,7 @@ import (
 
 	"github.com/shotah/george/internal/agent"
 	"github.com/shotah/george/internal/channel"
+	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/mcpenable"
 	"github.com/shotah/george/internal/memory"
 	"github.com/shotah/george/internal/persona"
@@ -142,10 +143,12 @@ type evalExpect struct {
 	// SameRound lists batches: every call in one entry must land in a single
 	// completer round, each matched by a distinct call. Args regexes inside
 	// an entry must not overlap; matching is greedy.
-	SameRound    [][]evalCallExpect `json:"same_round,omitempty"`
-	ReplyRegex   string             `json:"reply_regex,omitempty"`
-	ReplyNot     string             `json:"reply_not_regex,omitempty"`
-	MaxQuestions *int               `json:"max_questions,omitempty"`
+	SameRound  [][]evalCallExpect `json:"same_round,omitempty"`
+	ReplyRegex string             `json:"reply_regex,omitempty"`
+	ReplyNot   string             `json:"reply_not_regex,omitempty"`
+	// ToolStatsRegex must match `/toolstats` after the turn (a repair count).
+	ToolStatsRegex string `json:"toolstats_regex,omitempty"`
+	MaxQuestions   *int   `json:"max_questions,omitempty"`
 	// MaxToolCalls caps every call in the turn, builtins included: past the
 	// answer, any further call fails the run.
 	MaxToolCalls *int `json:"max_tool_calls,omitempty"`
@@ -157,7 +160,10 @@ type evalExpect struct {
 	// Files maps a workspace path to a regex its body must match after the
 	// turn: the patch landed, whatever the model said about it.
 	Files map[string]string `json:"files,omitempty"`
-	AnyOf []evalExpect      `json:"any_of,omitempty"`
+	// FilesNot maps a workspace path to a regex its body must not match:
+	// the shape that should not land (a near-copy beside the original).
+	FilesNot map[string]string `json:"files_not,omitempty"`
+	AnyOf    []evalExpect      `json:"any_of,omitempty"`
 }
 
 type evalCallExpect struct {
@@ -187,6 +193,8 @@ type evalCall struct {
 type evalOutcome struct {
 	Calls []evalCall
 	Reply string
+	// ToolStats is the `/toolstats` reply after the turn.
+	ToolStats string
 	// Err is Handle's error. A turn that errors is a failed run, not a
 	// stopped fixture, so the other runs still report.
 	Err error
@@ -249,9 +257,11 @@ var evalLiveTools func(t *testing.T) []provider.ToolDef
 // back to their canned results.
 var evalLiveHost func(t *testing.T, root string, servers []string) agent.Tools
 
-// liveRouted sends calls for Live server prefixes to the real host and every
-// other call to the canned tools. The defs stay the canned (live-catalog)
-// set, so what the model sees does not change with the routing.
+// liveRouted sends calls for Live server prefixes to the real host, and a
+// name no canned tool owns there too, so a mangled name meets Host.resolve
+// as it would in production. Every other call goes to the canned tools. The
+// defs stay the canned (live-catalog) set, so what the model sees does not
+// change with the routing.
 type liveRouted struct {
 	*cannedTools
 	live    agent.Tools
@@ -259,10 +269,20 @@ type liveRouted struct {
 }
 
 func (r *liveRouted) Call(ctx context.Context, name string, args json.RawMessage) (string, error) {
-	if prefix, _, ok := strings.Cut(name, "__"); ok && slices.Contains(r.servers, prefix) {
+	prefix, _, ok := strings.Cut(name, "__")
+	_, canned := r.results[name]
+	if (ok && slices.Contains(r.servers, prefix)) || !canned {
 		return r.live.Call(ctx, name, args)
 	}
 	return r.cannedTools.Call(ctx, name, args)
+}
+
+// CallStats is the live host's, so /toolstats shows its repairs.
+func (r *liveRouted) CallStats() mcp.CallStats {
+	if s, ok := r.live.(interface{ CallStats() mcp.CallStats }); ok {
+		return s.CallStats()
+	}
+	return mcp.CallStats{}
 }
 
 // seedWorkspace writes a fixture's files under dir.
@@ -471,6 +491,13 @@ func (r *recordingTools) Call(ctx context.Context, name string, args json.RawMes
 	return out, err
 }
 
+func (r *recordingTools) CallStats() mcp.CallStats {
+	if s, ok := r.inner.(interface{ CallStats() mcp.CallStats }); ok {
+		return s.CallStats()
+	}
+	return mcp.CallStats{}
+}
+
 func (r *recordingTools) snapshot() []evalCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -617,9 +644,12 @@ func runEvalFixture(ctx context.Context, t *testing.T, completer provider.Comple
 	}
 
 	reply, err := a.Handle(ctx, channel.Message{SessionID: sessionID, UserID: "eval", Text: fx.Inbound})
+	calls := rec.snapshot()
+	toolStats, _ := a.Handle(ctx, channel.Message{SessionID: sessionID, UserID: "eval", Text: "/toolstats"})
 	return evalOutcome{
-		Calls:            rec.snapshot(),
+		Calls:            calls,
 		Reply:            reply,
+		ToolStats:        toolStats,
 		Err:              err,
 		Rounds:           counter.round(),
 		PromptTokens:     counter.usage.PromptTokens,
@@ -714,6 +744,9 @@ func checkEval(ctx context.Context, out evalOutcome, want evalExpect) []string {
 	if want.ReplyNot != "" && regexp.MustCompile(want.ReplyNot).MatchString(reply) {
 		fails = append(fails, "reply should not match /"+want.ReplyNot+"/")
 	}
+	if want.ToolStatsRegex != "" && !regexp.MustCompile(want.ToolStatsRegex).MatchString(out.ToolStats) {
+		fails = append(fails, "toolstats should match /"+want.ToolStatsRegex+"/, got "+strings.ReplaceAll(out.ToolStats, "\n", " | "))
+	}
 	if want.MaxQuestions != nil {
 		if n := strings.Count(reply, "?") + strings.Count(reply, "？"); n > *want.MaxQuestions {
 			fails = append(fails, fmt.Sprintf("%d questions, max %d", n, *want.MaxQuestions))
@@ -732,6 +765,16 @@ func checkEval(ctx context.Context, out evalOutcome, want evalExpect) []string {
 		}
 		if re := want.Files[path]; !regexp.MustCompile(re).Match(body) {
 			fails = append(fails, fmt.Sprintf("file %s should match /%s/, is %q", path, re, body))
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(want.FilesNot)) {
+		body, err := os.ReadFile(filepath.Join(out.Workspace, filepath.FromSlash(path)))
+		if err != nil {
+			fails = append(fails, "file "+path+": "+err.Error())
+			continue
+		}
+		if re := want.FilesNot[path]; regexp.MustCompile(re).Match(body) {
+			fails = append(fails, fmt.Sprintf("file %s should not match /%s/, is %q", path, re, body))
 		}
 	}
 	if len(want.AnyOf) > 0 {

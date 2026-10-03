@@ -27,7 +27,6 @@ type ServerStatus struct {
 	Tool   string    // last prefixed tool name
 	Note   string    // last error (or boot skip reason)
 	Reason Reason    // no_binary | no_key | no_oauth | connect; empty when idle/ok
-	Auth   bool      // mcp.toml declares auth_args / auth_command
 	Prefix string    // tools_prefix or name; used to match model-invented calls
 }
 
@@ -42,16 +41,12 @@ func ServerHealthOf(v any) []ServerStatus {
 // ServerHealth lists every connected server (tools in the catalog) plus
 // boot-skipped manifest servers. Sorted by name.
 func (h *Host) ServerHealth() []ServerStatus {
-	type meta struct {
-		auth   bool
-		prefix string
-	}
 	h.mu.RLock()
 	names := make([]string, 0, len(h.servers))
-	info := make(map[string]meta, len(h.servers))
+	prefixes := make(map[string]string, len(h.servers))
 	for name, ms := range h.servers {
 		names = append(names, name)
-		info[name] = meta{auth: ms.spec.AuthConfigured(), prefix: prefixFor(ms.spec)}
+		prefixes[name] = prefixFor(ms.spec)
 	}
 	skipped := append([]ServerStatus(nil), h.skipped...)
 	h.mu.RUnlock()
@@ -65,7 +60,7 @@ func (h *Host) ServerHealth() []ServerStatus {
 
 	out := make([]ServerStatus, 0, len(names)+len(skipped))
 	for _, name := range names {
-		row := ServerStatus{Name: name, State: ServerIdle, Auth: info[name].auth, Prefix: info[name].prefix}
+		row := ServerStatus{Name: name, State: ServerIdle, Prefix: prefixes[name]}
 		if lc, ok := last[name]; ok {
 			row.At = lc.at
 			row.Tool = lc.tool

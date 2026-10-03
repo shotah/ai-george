@@ -341,5 +341,4 @@ These are in this process today. The plan moves them; the diagrams above
 describe the code, not that later cut.
 
 - `[harness]` is the clock. A workspace line (root and branch) is not stamped.
-- The context defaults (`HISTORY_MAX_TOKENS=32000`, `TOOL_RESULT_MAX_CHARS=6000`) were sized for a cloud window, not the 32k one the eval runs on.
 - The terminal reader has bracketed paste but no input history or arrow-key editing.
