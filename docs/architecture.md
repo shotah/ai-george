@@ -83,7 +83,7 @@ internal/provider/   OpenAI-compatible Completer (one implementation)
 internal/mcp/        manifest, spawn, list/call tools, truncate, restart, tools-fetch
 internal/mcpenable/  dynamic tool prefix grants
 internal/agent/      prompt assembly, tool loop, collapse, reply
-internal/session/    bounded history + rolling summary
+internal/session/    bounded history, one session per repo id
 internal/memory/     Memory interface, builtin SQLite/FTS5, MCP adapter
 internal/persona/    embedded contract + PERSONA.md + SELF.md
 internal/selfnote/   SELF.md tool + distill on /new
@@ -98,15 +98,15 @@ APIs all speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
 
 ## Process model
 
-One OS process. The REPL reads the next line only after the reply is done,
-so a turn is not steered mid-flight.
+One OS process. The REPL reads the next message only after the reply is
+done, so a turn is not steered mid-flight.
 
 | Piece | Job |
 | --- | --- |
-| stdio REPL | prompt `> `, one line in, one reply out; `/quit` `/exit` `/q` leave; EOF leaves |
-| agent handler | that line: assemble → model → tools → reply |
+| stdio REPL | prompt `> `, one message in (a line, or a bracketed paste), one reply out; `/quit` `/exit` `/q` leave; EOF or Ctrl-C at the prompt leaves |
+| agent handler | that message: assemble → model → tools → reply |
 | MCP children | one OS process per manifest server that connected (stdio) |
-| signal context | SIGINT / SIGTERM cancels the run context; the in-flight turn stops with it |
+| signals | Ctrl-C during a turn cancels that turn only; SIGTERM cancels the run context and the process exits |
 
 ```mermaid
 flowchart TB
@@ -148,18 +148,18 @@ sequenceDiagram
     Run->>Mem: OpenDB or MCPAdapter
   end
   Run->>Ch: Run(ctx, agent.Handle)
-  Note over Ch: blocks until quit, EOF, or SIGINT
+  Note over Ch: blocks until quit, EOF, or SIGTERM
 ```
 
 A missing binary or a missing `GITHUB_TOKEN` skips that server and leaves
 the others up. A bad manifest still exits 1. `fs`, `git`, `shell`, and
-`github` are `force = true` in `deploy/mcp.toml`, so their schemas stay
+`github` are `force = true` in the `mcp.toml` that `george init` writes, so their schemas stay
 published and a turn does not spend a round on `mcp_enable` before an edit.
 
 ## Message / agent loop
 
-One turn is one human line. The REPL does not read again until `Handle`
-returns.
+One turn is one human message: a line, or a bracketed paste. The REPL does
+not read again until `Handle` returns.
 
 ```mermaid
 sequenceDiagram
@@ -171,7 +171,7 @@ sequenceDiagram
   participant L as LLM
   participant T as mcp / memory tools
 
-  U->>Ch: one line
+  U->>Ch: one message
   Ch->>A: Handle(ctx, msg)
   alt slash command
     A->>S: reset / stats / catalog
@@ -190,7 +190,7 @@ sequenceDiagram
         end
       else text
         A-->>Ch: reply
-        A->>S: Append user+assistant (may trim → fold summary)
+        A->>S: Append user+assistant (may trim the oldest rows; no summary completion)
       end
     end
   end
@@ -198,9 +198,10 @@ sequenceDiagram
 ```
 
 Slash commands the agent handles: `/new`, `/cancel`, `/status`, `/tools`,
-`/perf`, `/memstats`, `/toolstats`, `/tokens`, `/help`, `/brief`, `/short`,
-`/off`. `/cancel` only lands if it is the line being handled; the REPL does
-not read during a turn, so SIGINT is what stops one that is already running.
+`/perf`, `/memstats`, `/memory move <old repo id>`, `/toolstats`, `/tokens`,
+`/help`, `/brief`, `/short`, `/off`. `/cancel` only lands if it is the line
+being handled; the REPL does not read during a turn, so Ctrl-C is what stops
+one that is already running.
 
 The loop keeps the last two tool rounds whole, including a parallel batch.
 Older rounds become a one-line marker in-process. No completion is spent to
@@ -243,8 +244,8 @@ only when exactly one published tool has that base name. A real prefix plus
 a wrong tool (`fs__get_file`) is left to the closest-name hint. Argument
 errors and cancel do not restart the child.
 
-On SIGINT the REPL returns, then deferred `mcp.Host.Close()` tears down the
-stdio sessions.
+On `/quit`, EOF, or SIGTERM the REPL returns, then deferred
+`mcp.Host.Close()` tears down the stdio sessions.
 
 Operator details (naming, local REPL): [mcp.md](mcp.md).
 
@@ -255,8 +256,8 @@ One WAL SQLite file: `$DATA_DIR/george.db` (default
 
 | Table | Owner package | Purpose |
 | --- | --- | --- |
-| `session` / `session_message` | `session` | history + rolling `summary` |
-| `memory` / `memory_fts` | `memory` | structured long-term memory (FTS5, no embeddings) |
+| `session` / `session_message` | `session` | history, one session per repo id; the `summary` column is read for an older `george.db` and no longer written |
+| `memory` / `memory_fts` | `memory` | structured long-term memory (FTS5, no embeddings), a `scope` column of `user` or a repo id |
 | `mcp_enable` | `mcpenable` | prefix holds for dynamic tools |
 | `mcp_budget` | `mcp` | per-server call caps from the manifest |
 
@@ -266,8 +267,11 @@ session row (cascade messages + summary) after `Voice:` merges into
 untouched. A row lands because the model stored it, or because that fold
 parked an episode. There is no consolidator timer.
 
-The session id on stdio is the constant `george`. One conversation for this
-process.
+The session id on stdio is the repo id: the normalized `origin` URL, or the
+root path when there is no remote (`repoID` in `cmd/george/root.go`). One
+conversation per repo; `george` in another repo resumes that repo's.
+Memory rows carry the same id in `scope`, or `user` for preferences that
+follow you everywhere.
 
 ## Prompt assembly (order)
 
@@ -336,6 +340,6 @@ line when a turn has produced no model output yet.
 These are in this process today. The plan moves them; the diagrams above
 describe the code, not that later cut.
 
-- Memory rows have no repo-versus-you scope column. Hydration is one table.
-- Stdio is a line scanner (a line may be up to 1MB). A paste is not yet one bracketed message, and the first Ctrl-C cancels the process.
 - `[harness]` is the clock. A workspace line (root and branch) is not stamped.
+- The context defaults (`HISTORY_MAX_TOKENS=32000`, `TOOL_RESULT_MAX_CHARS=6000`) were sized for a cloud window, not the 32k one the eval runs on.
+- The terminal reader has bracketed paste but no input history or arrow-key editing.

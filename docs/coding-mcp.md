@@ -78,9 +78,9 @@ Server id `shell`. One tool.
 
 `run` is a domain verb, same kind of exception as `beam` and `generate`. It is not in the host’s generic-verb set, so `run_command` shares both tokens with `command_run`. Do not also register `command_create` or `test_run`. Tests, builds, and linters are commands.
 
-- Cwd is `--root`. The same jail as `fs` and `git`.
+- Cwd is `--root`. Unlike `fs` and `git`, that is a working directory, not a jail: a command can name any path.
 - One command string. A timeout. The result leads with the exit code and the tail of the output, so a test failure survives truncation.
-- The container (or the root jail on a systemd unit) is the sandbox. This server does not grow an allowlist of binaries.
+- There is no sandbox. The command runs as you, and git is the undo ([design.md](design.md#security)). This server does not grow an allowlist of binaries.
 
 ## `github`
 

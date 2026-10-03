@@ -143,10 +143,51 @@ func (b *Builtin) Close() error {
 	return b.db.Close()
 }
 
+// Move retags every row stored under the repo id from to this repo, for a
+// remote rename that orphaned them. A moved row whose kind+subject is already
+// live here is superseded by the newer of the two, as a Store would.
+func (b *Builtin) Move(ctx context.Context, from string) (int, error) {
+	from = strings.TrimSpace(from)
+	switch {
+	case b.Repo == "":
+		return 0, fmt.Errorf("memory: no repo id to move rows into")
+	case from == "" || from == ScopeUser:
+		return 0, fmt.Errorf("memory: move needs the old repo id (see /memstats)")
+	case from == b.Repo:
+		return 0, fmt.Errorf("memory: %q is already this repo", from)
+	}
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("memory: move: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE memory SET scope = ? WHERE scope = ?`, b.Repo, from)
+	if err != nil {
+		return 0, fmt.Errorf("memory: move: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `
+		WITH live AS (
+			SELECT id, ROW_NUMBER() OVER (PARTITION BY kind, subject ORDER BY updated_at DESC, id DESC) AS rn,
+			       FIRST_VALUE(id) OVER (PARTITION BY kind, subject ORDER BY updated_at DESC, id DESC) AS newest
+			FROM memory
+			WHERE scope = ? AND kind != ? AND superseded_by IS NULL
+		)
+		UPDATE memory SET superseded_by = (SELECT newest FROM live WHERE live.id = memory.id)
+		WHERE id IN (SELECT id FROM live WHERE rn > 1)`, b.Repo, KindEpisode); err != nil {
+		return 0, fmt.Errorf("memory: move supersede: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("memory: move: %w", err)
+	}
+	return int(n), nil
+}
+
 // StatsSnapshot is the /memstats view of the builtin store.
 type StatsSnapshot struct {
 	Total      int
 	ByKind     map[string]int
+	ByScope    map[string]int
 	Active     int
 	Expired    int
 	Superseded int
@@ -158,7 +199,7 @@ func (b *Builtin) Stats(ctx context.Context) (StatsSnapshot, error) {
 	if b == nil || b.db == nil {
 		return StatsSnapshot{}, fmt.Errorf("memory: nil store")
 	}
-	snap := StatsSnapshot{ByKind: make(map[string]int)}
+	snap := StatsSnapshot{ByKind: make(map[string]int), ByScope: make(map[string]int)}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	rows, err := b.db.QueryContext(ctx, `SELECT kind, COUNT(*) FROM memory GROUP BY kind`)
@@ -180,6 +221,25 @@ func (b *Builtin) Stats(ctx context.Context) (StatsSnapshot, error) {
 		return StatsSnapshot{}, err
 	}
 	_ = rows.Close()
+
+	scopes, err := b.db.QueryContext(ctx, `SELECT scope, COUNT(*) FROM memory GROUP BY scope`)
+	if err != nil {
+		return StatsSnapshot{}, fmt.Errorf("memory: stats scope: %w", err)
+	}
+	for scopes.Next() {
+		var scope string
+		var n int
+		if err := scopes.Scan(&scope, &n); err != nil {
+			_ = scopes.Close()
+			return StatsSnapshot{}, err
+		}
+		snap.ByScope[scope] = n
+	}
+	if err := scopes.Err(); err != nil {
+		_ = scopes.Close()
+		return StatsSnapshot{}, err
+	}
+	_ = scopes.Close()
 
 	if err := b.db.QueryRowContext(ctx, `
 		SELECT

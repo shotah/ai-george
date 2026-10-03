@@ -30,7 +30,7 @@ dashboard.
 4. **Plugin-centric.** Workspace read, patch, git, and shell are MCP
    children. The harness hosts them. Builtins are memory, `self_note`, and
    `web_search`. Import a library over writing one.
-5. **1:1.** One process, one conversation (`george`), one model endpoint.
+5. **1:1.** One process, one conversation per repo, one model endpoint.
    No multi-provider config, no multi-agent config, no peer routing.
 6. **Env + files is the config plane.** Keys in `~/.config/george/env`.
    Structure in persona markdown, `mcp.toml`, and the data directory. The
@@ -210,8 +210,9 @@ prompt at load time and left on disk.
 
 ## Agent loop
 
-One human line is one turn. The REPL reads the next line only after the
-reply. Keep the loop bounded:
+One message is one turn: a typed line, or a bracketed paste of any length.
+The REPL reads the next message only after the reply. Keep the loop
+bounded:
 
 1. **Assemble.** Contract + `PERSONA.md` + `SELF.md` + optional summary +
    history + optional `[memory]` + server health + the user line +
@@ -286,12 +287,14 @@ CREATE TABLE memory (
   updated_at    TEXT NOT NULL,
   expires_at    TEXT,
   superseded_by INTEGER,
-  consolidated  INTEGER NOT NULL DEFAULT 0
+  consolidated  INTEGER NOT NULL DEFAULT 0,
+  scope         TEXT NOT NULL DEFAULT 'user'  -- 'user', or a repo id
 );
 CREATE VIRTUAL TABLE memory_fts USING fts5(subject, content, content='memory', content_rowid='id');
 ```
 
-`consolidated` is a leftover column. No job sets it.
+`consolidated` is a leftover column. No job sets it. `scope` is added to an
+older `george.db` on open; rows from before the column are `user`.
 
 The coding subjects the tools already describe:
 
@@ -307,11 +310,16 @@ The coding subjects the tools already describe:
 the agent learned that is not written there. Memory never writes into the
 repo.
 
-A `scope` column (you versus this repo) and a session id per repo are
-planned and not in the schema yet
-([coding-agent-plan.md](coding-agent-plan.md#memory-you-and-the-repo)).
-Today every row is visible to every `george` that opens this database, and
-the session id is the constant `george`.
+Rows are scoped to you or to this repo, and the scope follows the kind:
+`preference` and `person` are `user`; `fact`, `insight`, and `episode`
+belong to the repo. Reads take `user` rows plus this repo's. Supersede by
+subject stays inside one scope. The repo id is the normalized `origin` URL
+(the same string for ssh, https, and scp spellings, and for every worktree),
+or the root path when there is no remote. The same id is the session id, so
+`george` in repo A resumes repo A's conversation and `/new` resets only
+that one. After a remote rename, `/memory move <old repo id>` brings the
+orphaned rows to the current id; `/memstats` lists the ids it knows. Design
+notes: [coding-agent-plan.md](coding-agent-plan.md#memory-you-and-the-repo).
 
 ### Builtin tools
 
@@ -343,20 +351,24 @@ The terminal is the console. No port, no dashboard, no `george status`.
 
 | Command / signal | Behavior |
 | --- | --- |
-| `george` / `george run` | REPL in this repo until `/quit`, EOF, or SIGINT |
+| `george` / `george run` | REPL in this repo until `/quit`, EOF, or SIGTERM |
 | `george init` | Write `~/.config/george/` once; skip existing files |
 | `george tools-fetch` | Download the binaries named in `mcp.toml` into `~/.local/share/george/bin` |
 | `george tools-plan` | Print that inventory as JSON; do not download |
 | `george version` | Build ldflags |
-| SIGINT / SIGTERM | Cancel the run context (the in-flight turn stops with it), close MCP, close the DB |
+| Ctrl-C (SIGINT) during a turn | Cancel that turn only; the prompt comes back. Tools that already finished are not undone |
+| Ctrl-C at the prompt | Exit, the same as EOF |
+| SIGTERM | Cancel the run context, close MCP, close the DB |
 | Logs | JSON `slog` on stderr |
 
 REPL commands: `/new` `/cancel` `/status` `/tools` `/perf` `/memstats`
-`/toolstats` `/tokens` `/help` `/brief` `/short` `/off`, plus `/quit`.
-`/cancel` only runs if it is the line being handled. The first Ctrl-C is
-SIGINT, which cancels the process. Bracketed paste and Ctrl-C that cancels
-only the turn are still open
-([coding-agent-plan.md](coding-agent-plan.md#input-on-stdio)).
+`/memory move <old repo id>` `/toolstats` `/tokens` `/help` `/brief`
+`/short` `/off`, plus `/quit`. The REPL does not read during a turn, so
+`/cancel` only runs if it is the line being handled; Ctrl-C is how a
+running turn is stopped. On a terminal the line editor is
+`golang.org/x/term` with bracketed paste on, so a paste is one message and
+Enter sends it; piped stdin is one message per line. There is no input
+history yet.
 
 `SPINUP_NOTICE_MS` (default 4s) prints a still-working line before the first
 token. `TOOL_TRACE=compact` prints tool activity on the stream.
@@ -379,7 +391,7 @@ Dev: `make build|test|lint|run|ci|check`.
 2. **One OpenAI-compat client.** Ollama, llama.cpp, and the cloud APIs already speak that shape. A provider registry is a second product.
 3. **Token counting is chars/4**, labeled as an estimate. No tokenizer dependency.
 4. **Memory is builtin SQLite.** `MEMORY_BACKEND=mcp:<name>` is the escape hatch. No vector column. Auto-save off. No consolidator.
-5. **Taste is `SELF.md`.** Repo commands and goals are memory subjects. A scope column is the planned split and is not shipped.
+5. **Taste is `SELF.md`.** Repo commands and goals are memory subjects, scoped to the repo; preferences are scoped to you.
 6. **Four coding servers, `force = true`.** Their schemas stay on the request. GitHub without a token is skipped; `fs` still patches.
 7. **Streaming replies default on.**
 8. **Logs on stderr.** stdout is the reply.
@@ -405,7 +417,7 @@ approval prompt.
 | A buggy MCP binary | Inherits the process environment unless the manifest sets `env` |
 | Someone who can read your home directory | Can read `george.db` and the env file |
 
-**Controls that ship:** no listen port; keys in `~/.config/george/env` (init writes it `0600`); manifest membership is the grant; `SELF.md` capped at 4096 characters; memory rows are readable and forgettable; SIGINT cancels the in-flight turn.
+**Controls that ship:** no listen port; keys in `~/.config/george/env` (init writes it `0600`); manifest membership is the grant; `SELF.md` capped at 4096 characters; memory rows are readable and forgettable; Ctrl-C cancels the in-flight turn.
 
 **Residual (accepted):** the shell can `curl`, `gh`, and `git push`; caps bound context size, not spend. Treat `mcp.toml` like a list of programs you are willing to run as yourself.
 

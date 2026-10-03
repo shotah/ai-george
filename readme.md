@@ -102,7 +102,8 @@ database is `~/.local/share/george/george.db`.
 Then `cd` into any repo and run `george`. The root is the git toplevel
 of the directory you started in (or that directory, outside a repo), and
 `mcp.toml` hands it to the servers as `--root ${GEORGE_ROOT}`. Every repo
-gets the same model, persona, database, and tools.
+gets the same model, persona, database, and tools, and its own conversation
+and repo facts (keyed by the `origin` URL, or the root path without one).
 
 Anything set in your shell wins over `~/.config/george/env`. To use a
 different config directory, set `GEORGE_CONFIG_DIR`. `george help` lists
@@ -143,24 +144,29 @@ Wiring and naming: [docs/coding-mcp.md](docs/coding-mcp.md),
 
 | Command | What it does |
 | --- | --- |
-| `/new` | Reset the session. Taste goes into `SELF.md`, facts park in memory |
-| `/cancel` | Stop the turn in flight |
+| `/new` | Reset this repo's session. Taste goes into `SELF.md`, facts park in memory |
+| `/cancel` | Stop the turn in flight (Ctrl-C does the same while a turn runs) |
 | `/status` `/perf` `/tokens` | Uptime and model, last turns' rounds and batches, prompt size |
-| `/tools` `/toolstats` `/memstats` | Tool catalog, per-tool calls since boot, memory row counts |
+| `/tools` `/toolstats` `/memstats` | Tool catalog, per-tool calls since boot, memory row counts by kind and repo |
+| `/memory move <old repo id>` | After a remote rename, bring that id's rows to this repo |
 | `/brief` `/short` `/off` | Hold an MCP prefix on for ~6h or ~27h, or drop the hold |
-| `/help` `/quit` | This list, exit |
+| `/help` `/quit` | This list, exit (Ctrl-C at the prompt also exits) |
+
+On a terminal a paste of any length is one message; Enter sends it.
 
 ## What it remembers
 
 | Where | What | Who writes it |
 | --- | --- | --- |
-| `PERSONA.md` | How the agent works: the edit chain, when to batch, never claim a green it did not see, commit only when asked | You |
+| the contract (embedded) | How the work is done: the edit chain, when to batch, never claim a green it did not see, commit only when asked | george; the eval grades it |
+| `PERSONA.md` | Name, voice, and timezone. Empty by default | You |
 | `SELF.md` | How you like the work done, in every repo: review style, commit shape, what to never do | The agent, when you say it or correct it |
-| memory (SQLite) | Repo facts: how to test and build, conventions, goals | The agent, via `memory_store` |
+| memory (SQLite) | Repo facts: how to test and build, conventions, goals. Preferences follow you to every repo; facts stay with the repo they were learned in | The agent, via `memory_store` |
 
 Same kind and subject replaces the live row, so a corrected fact
-supersedes the old one. Memory scoped per repo is planned
-([Memory](docs/coding-agent-plan.md)); today rows are shared.
+supersedes the old one. A `fact` stored in one repo is not recalled in
+another; a `preference` is. Details:
+[Memory](docs/coding-agent-plan.md#memory-you-and-the-repo).
 
 ## Tested two ways
 
@@ -187,7 +193,7 @@ chain and parallel reads, checks, and patches. Setup:
 | Run the live behavior eval | **[docs/eval_setup.md](docs/eval_setup.md)** |
 | The coding MCP servers | **[docs/coding-mcp.md](docs/coding-mcp.md)** |
 | Why this tree, not goose | **[docs/fork-cli-agent.md](docs/fork-cli-agent.md)** |
-| A reading of this repo: pros, cons, whether to use it | **[docs/review.md](docs/review.md)** |
+| A reading of this repo: pros, cons, whether to use it | **[docs/review_grok47.md](docs/review_grok47.md)**, **[docs/review_fable51.md](docs/review_fable51.md)** |
 
 ## License
 

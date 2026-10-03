@@ -763,6 +763,7 @@ func defaultDial(ctx context.Context, spec ServerSpec, stderr io.Writer) (Conn, 
 	cmd := exec.Command(spec.Command, ExpandAuthArgs(spec.Args)...) //nolint:gosec // G204: command comes from operator mcp.toml
 	cmd.Env = append(os.Environ(), spec.Env...)
 	cmd.Stderr = stderr
+	ownProcessGroup(cmd)
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "george", Version: "dev"}, nil)
 	transport := &mcpsdk.CommandTransport{Command: cmd}

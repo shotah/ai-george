@@ -96,7 +96,8 @@ func run() int {
 	}()
 	logger.Info("session store ready", "path", filepath.Join(cfg.DataDir, "george.db"))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGINT belongs to the REPL: it cancels the running turn, not george.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
 	// Server `budget` counters share george.db so a monthly cap survives a

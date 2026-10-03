@@ -259,6 +259,15 @@ func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error)
 		return "nothing in progress to cancel", nil
 	}
 
+	if fields := strings.Fields(text); len(fields) > 0 && strings.EqualFold(fields[0], "/memory") {
+		unlock := a.lockSession(msg.SessionID)
+		defer unlock()
+		if a.memory == nil {
+			return "memory: disabled", nil
+		}
+		return a.memoryMove(ctx, fields[1:]), nil
+	}
+
 	if cmd, prefix, ok := parseEnableHoldCommand(text); ok {
 		unlock := a.lockSession(msg.SessionID)
 		defer unlock()

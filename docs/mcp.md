@@ -4,13 +4,15 @@ How the harness loads tools, names them for the model, recovers from common
 hallucinations, and how to exercise that path locally.
 
 Capabilities live in **external MCP stdio binaries**, plus a few harness
-builtins (memory, cron, watch, `self_note`, `web_search`). The host
+builtins (`memory_*`, `self_note`, `mcp_enable`, `web_search`). The host
 supervises MCP children: spawn → list → call → truncate → restart. See
 [architecture.md](architecture.md) for the process diagram; this page is the
-operator contract for naming and local use.
+operator contract for naming and local use. The four coding servers and
+their tools: [coding-mcp.md](coding-mcp.md).
 
-Long-horizon planning uses tools over days (cron, watches). The host has to
-repair names and finish turns or the horizon collapses into ERROR.
+A coding turn is several tool rounds on a local model, and a bounced call
+costs a whole round. The host has to repair names and finish turns, or the
+edit never lands.
 
 ---
 
@@ -18,12 +20,13 @@ repair names and finish turns or the horizon collapses into ERROR.
 
 | Goal | How MCP helps |
 | --- | --- |
-| Keep the harness small | Calendar, Cast, etc. stay out of `george`. Web search is a builtin. |
+| Keep the harness small | Workspace read, patch, git, and shell stay out of `george`. Web search is a builtin. |
 | Clear grant model | A server in `mcp.toml` is granted; omit it and it does not exist |
-| Distroless-friendly | Static Go binaries over stdio — no shell, no npm in the image |
-| Swappable brains | Same tool schemas work for Gemini, ChatGPT, Ollama — OpenAI-compat tool calls |
+| One install step | Static Go binaries over stdio; `george tools-fetch` drops them in one directory |
+| Swappable brains | The same tool schemas work for any OpenAI-compatible endpoint |
 
-Chat, memory, cron, and web search work with **zero** MCP servers. Other tools are optional.
+Memory, `self_note`, and web search work with **zero** MCP servers. Editing
+a file needs `fs`.
 
 ---
 
@@ -43,36 +46,22 @@ Examples:
 
 | Manifest `name` | MCP tool | Name the model must call |
 | --- | --- | --- |
-| *(builtin)* | `web_search` | `web_search` (always on; no prefix) |
-| `google` | `calendar_list_events` | `google__calendar_list_events` |
-| `math` | `expression_evaluate` | `math__expression_evaluate` |
-| `youtube` | `videos_search` | `youtube__videos_search` |
-| `cast` | `youtube_beam_video` | `cast__youtube_beam_video` |
-| `garmin` | `sleep_get` | `garmin__sleep_get` |
-| `strava` | `activities_list`, `urls_resolve` | `strava__activities_list` |
-| `feeds` | `items_list` | `feeds__items_list` |
-| `twitter` | `posts_list` | `twitter__posts_list` |
-| `maps` | `place_search`, `route_eta` | `maps__place_search` |
-| `image` | `photo_generate`, `photo_edit` | `image__photo_generate` |
-| `pendant` | `avatar_update`, `theme_list` | `pendant__avatar_update` |
-| `boards` | `challenges_list` | `boards__challenges_list` |
-
-MCP `ImageContent` (image-generation-mcp) is **not** stuffed into the model
-prompt — hosts truncate tool results. The JSON summary stays; Telegram /
-Discord / Slack `SendPhoto` the PNG; pendant puts `images: [{ url }]` on the
-mailbox reply (same shape as inbound). Grant prefix `image` (not fat `google`).
-Image bytes that another tool must read go to disk via `IMAGE_OUTPUT_DIR`;
-downstream tools (pendant `avatar_update` / `backdrop_update`) take `source_path`.
+| *(builtin)* | `web_search` | `web_search` (no prefix) |
+| *(builtin)* | `memory_store` | `memory_store` (no prefix) |
+| `fs` | `file_get`, `file_patch` | `fs__file_get`, `fs__file_patch` |
+| `git` | `status_get`, `commit_create` | `git__status_get` |
+| `shell` | `command_run` | `shell__command_run` |
+| `github` | `issues_list`, `pulls_get` | `github__issues_list` |
 
 **Why the prefix?** OpenAI-safe characters, no collisions across servers, and
-obvious provenance in logs / collapsed history markers.
+obvious provenance in logs and collapsed history markers.
 
 Optional override in `mcp.toml`:
 
 ```toml
 [[server]]
-name = "garmin"
-tools_prefix = "garm"   # tools become garm__sleep_get, …
+name = "github"
+tools_prefix = "gh"   # tools become gh__issues_list, …
 ```
 
 Default prefix is the server `name`. Prefer short, stable prefixes when a
@@ -80,7 +69,7 @@ hyphenated product name fights the model (see below).
 
 Inspect what the running agent sees:
 
-- Telegram / Discord / Slack / stdio: `/tools` (total + per-server `schema_est_tokens`)
+- `/tools` (total + per-server `schema_est_tokens`)
 - `/status` includes `schema_est_tokens` alongside history size
 - Boot logs: `mcp server connected` (`tools_listed` vs `tools_published`), then
   `tool schema estimate` + one `tool schema by server` line per prefix
@@ -88,61 +77,52 @@ Inspect what the running agent sees:
   key, broken binary, EOF), george logs `mcp server boot skipped` with a stable
   `reason` (`no_binary` / `no_key` / `no_oauth` / `connect`) and continues.
   Calling a skipped prefix returns `tool error [<reason>]: … is skipped — do
-  not invent <name>__* names`. A single optional tool must not take down the
-  agent.
+  not invent <name>__* names`. A missing `GITHUB_TOKEN` skips `github` and
+  leaves `fs`, `git`, and `shell` up.
 
 ---
 
-## Local models and hyphenated prefixes
+## Local models and mangled names
 
-Server names can use hyphens. Tool *suffixes* use underscores. Small local
-models (e.g. Qwen via Ollama) frequently **normalize the whole name to
-underscores** and invent nearby names.
+Small local models (Qwen via Ollama in the eval) rewrite tool names: the
+whole name normalized to underscores, a dot or a single underscore where the
+`__` should be, a bare tool name with no prefix, or a prefix that does not
+exist. Each miss is a full model round-trip, the most expensive thing in a
+local-model turn, so the host repairs what it can without the model.
 
-Web search is the unprefixed builtin `web_search` (Brave Search HTTP —
-titles, URLs, snippets). Leftover MCP names (`google-search__web_search`,
-`google_search__web_search`) still call that builtin; they are not a second
-model.
-
-Typical hyphen-prefix failure spiral (why search is a builtin now):
-
-1. Model calls `google-search__google_search` → unknown tool (invented suffix)
-2. Host suggests a catalog name; model rewrites the prefix to underscores
-3. Hint degrades to a bare prefix list → more guessing → think-stall
-
-That is a **runtime** problem, not a persona typo. Exact names come from the
-live catalog (tool schemas + `[mcp prefixes]` + `/tools`); the host also
-hardens the call path.
+Web search is the unprefixed builtin `web_search` (Brave Search HTTP:
+titles, URLs, snippets). A bare `google_search` still reaches it.
 
 ### Alias resolve (automatic)
 
-On `Call`, if the exact name is missing, george rewrites **only the server
-prefix** so underscores become hyphens, then retries lookup:
+On `Call`, if the exact name is missing, the host tries in order:
 
-```text
-google_search__web_search  →  builtin web_search   ✅ called
-```
+1. **Hyphenate the prefix.** `my_server__tool` → `my-server__tool`. Tool
+   suffixes are never rewritten.
+2. **Wrong separator.** A real prefix joined to a real tool by `.`, `_`, `-`,
+   `/`, or `:` instead of `__`:
 
-Tool suffixes are **not** rewritten (`calendar_list_events` stays
-`calendar_list_events`). Search aliases are handled by the builtin, not by
-prefix rewrite.
+   ```text
+   fs.file_get        →  fs__file_get        ✅ called
+   git_status_get     →  git__status_get     ✅ called
+   shell-command_run  →  shell__command_run  ✅ called
+   ```
 
-A real tool name wearing an invented or missing prefix is repaired the same way,
-because a bounced call costs a full model round-trip — the most expensive thing
-in a local-model turn:
+3. **Unique bare name.** A real tool name wearing an invented or missing
+   prefix, when exactly one published tool has that name:
 
-```text
-mcp__hrv_get  →  garmin__hrv_get   ✅ called
-hrv_get       →  garmin__hrv_get   ✅ called
-```
+   ```text
+   mcp__file_get  →  fs__file_get   ✅ called
+   file_patch     →  fs__file_patch ✅ called
+   ```
 
 Two cases are left to the model on purpose:
 
-- **Real prefix, wrong tool** (`garmin__athlete_get` when only Strava has it).
+- **Real prefix, wrong tool** (`fs__status_get` when only `git` has it).
   The model chose that server deliberately, so it gets that server's catalog
   rather than a silent hop to a different server.
-- **Two servers publish the name** (`activities_get` on both Garmin and Strava).
-  Guessing is a coin flip, so both real names go back as a hint.
+- **Two servers publish the name.** Guessing is a coin flip, so both real
+  names go back as a hint.
 
 When any repair fires, logs show:
 
@@ -150,37 +130,37 @@ When any repair fires, logs show:
 mcp tool name aliased  requested=…  resolved=…
 ```
 
+`/toolstats` counts them as `prefix_alias`.
+
 ### Unknown-tool suggestions
 
 If lookup still fails, the error string is model-facing and catalog-aware:
 
 | Mistake | Hint shape |
 | --- | --- |
-| Wrong tool, real prefix | `valid garmin tools are: garmin__hrv_get — retry with one of these exact names` |
-| Underscored prefix, wrong tool | `did you mean "garmin"?` + that server’s exact tool list |
-| Invented name (fake prefix, merged suffix) | `closest real names are: garmin__wellness_get_body_battery, garmin__hrv_get — retry with one of these exact names` |
-| Unknown prefix, nothing close | `available server prefixes are: cast, garmin, google, …` |
+| Wrong tool, real prefix | `no such tool; valid fs tools include: fs__file_get, fs__file_patch, … — retry with one of these exact names` |
+| Underscored or hyphenated prefix, wrong tool | `no such tool or server prefix "f_s" (did you mean "fs"?); valid fs tools include: …` |
+| Invented name (fake prefix, merged suffix) | `no such tool; closest real names are: fs__file_get, fs__file_patch — retry with one of these exact names` |
+| Unknown prefix, nothing close | `available server prefixes are: fs, git, github, shell` |
 
 The agent loop feeds that error back as a tool result so the next iteration
 can self-correct (same pattern as argument/schema failures).
 
 Closest-name ranking scores shared name tokens, ignoring generic verbs (`get`,
 `list`, `set`, …) that would otherwise match everything. A model that invents a
-tool tends to stitch real fragments together — `mcp__get_hrv_and_body_battery`
-is `get_hrv` plus `get_body_battery` under a prefix that does not exist — so the
-fragments identify what it was reaching for even when neither prefix nor suffix
-is real.
+tool tends to stitch real fragments together, so the fragments identify what
+it was reaching for even when neither prefix nor suffix is real.
 
 ### Printed tool calls
 
 A model can also skip the `tool_calls` field entirely and *print* the call:
 
 ```json
-{ "name": "garmin__get_daily_activity", "parameters": { "date": "2026-07-28" } }
+{ "name": "fs__file_get", "parameters": { "path": "a.go" } }
 ```
 
 Without handling, that JSON is just assistant text, so it becomes the visible
-reply — the agent answering in wire format. george parses it back into a real
+reply, the agent answering in wire format. george parses it back into a real
 call and runs it, accepting the object bare, fenced, inside `<tool_call>` tags,
 or embedded in prose, with arguments under `arguments`, `parameters`, `args`, or
 `input` (models pick all of them).
@@ -189,8 +169,8 @@ or embedded in prose, with arguments under `arguments`, `parameters`, `args`, or
 model printed a tool call instead of emitting one; executing it  name=… chars=90
 ```
 
-The name must look like a tool — published, or at least carrying a `server__`
-prefix — so an ordinary reply that happens to contain JSON is never hijacked. An
+The name must look like a tool, published or at least carrying a `server__`
+prefix, so an ordinary reply that happens to contain JSON is never hijacked. An
 unpublished but prefixed name is still run on purpose: the host's answer is what
 names the real tools, which feeds the retry below.
 
@@ -204,8 +184,8 @@ would spell anything else, so a bad name stops being unlikely and becomes
 impossible.
 
 ```text
-tool call failed        name=mcp__get_hrv_and_body_battery
-constraining retry …    requested=mcp__get_hrv_and_body_battery candidates=2
+tool call failed        name=fs__read_file
+constraining retry …    requested=fs__read_file candidates=2
 model call              iteration=2 forced_tool_names=2
 ```
 
@@ -219,19 +199,19 @@ Three details make it work:
   parses the JSON object back into a `ToolCall`.
 - **It is one-shot, and never streams.** A grammar forces *every* reply to be
   JSON, so leaving it on would make conversational answers impossible; and
-  streaming it would type raw JSON into the user's bubble.
+  streaming it would type raw JSON into the user's terminal.
 
-No candidates means no constraint — forcing a call out of the whole catalog is
+No candidates means no constraint; forcing a call out of the whole catalog is
 just a different guess.
 
 ### What aliasing does *not* fix
 
-- Invented tool suffixes (`…__google_search`) — no real name to repair to, so these
-  still need a retry with the suggested name (or a smaller published tool surface)
-- Wrong arguments (e.g. passing a time range as `event_id`) — MCP/API errors
-- Think-only turns with no tool call — agent nudge / stall path in
+- Invented tool suffixes (`fs__read_file`): no real name to repair to, so these
+  still need the constrained retry above
+- Wrong arguments (a hunk header that does not match the file): MCP/API errors
+- Think-only turns with no tool call: agent nudge / stall path in
   `internal/agent` (separate from naming)
-- A model that neither calls nor prints anything callable — still a nudge, then
+- A model that neither calls nor prints anything callable: still a nudge, then
   the turn answers with whatever prose it has
 
 ---
@@ -243,55 +223,46 @@ to the model:
 
 ```toml
 [[server]]
-name = "garmin"
-command = "garmin"
-args = ["mcp"]
-tools = ["get_sleep", "get_weight", "get_hrv"]  # allowlist
+name = "fs"
+command = "fs-mcp"
+args = ["--root", "${GEORGE_ROOT}"]
+tools = ["file_get", "file_list", "file_patch"]  # allowlist
 # exclude = ["raw_*"]
 ```
 
 Boot logs `tools_listed` vs `tools_published`. Schema cost is estimated as
 `est_tokens` (chars/4); `TOOL_SCHEMA_MAX_TOKENS` can hard-fail an oversized set.
-Prefer MCP-native tiers (`--tool-tier core`) first — [design.md](design.md#decisions).
+Prefer MCP-native tiers (`--tool-tier core`) first: [design.md](design.md#decisions).
 
 ### Call budget (`budget`)
 
-A metered API — rentals, flights, cars on a 50-requests-a-month plan — gets
-its quota written into the manifest, and the host enforces it:
+A metered API gets its quota written into the manifest, and the host
+enforces it:
 
 ```toml
 [[server]]
-name = "rentals"
-command = "rentals-search-mcp"
-budget = "1/day"        # or "50/month"
+name = "github"
+command = "github-mcp"
+budget = "50/day"        # or "50/month"
 ```
 
-Why the host and not the prompt: the model is not the only caller, and it
-is not a careful one. In the behavioral eval a single "I need to be in
-Denver Friday" produced three to five `flights__search` calls in one turn.
-A `watch_add` that omits `interval` polls every **15 minutes** — 96 calls a
-day, a monthly quota gone before lunch. The daily planner reaches for live tools
-too. Every one of those paths ends in the same `Host.call`, so that is
-where the counter sits, after argument validation (a malformed call spends
-nothing) and before the child is touched (a refused call never reaches the
-vendor).
+Why the host and not the prompt: the model is not a careful caller. A single
+question can produce three to five calls to the same server in one turn.
+Every call ends in the same `Host.call`, so that is where the counter sits,
+after argument validation (a malformed call spends nothing) and before the
+child is touched (a refused call never reaches the vendor).
 
-- Counted per server per period in `george.db` (`mcp_budget`), so a
-  monthly cap survives a redeploy. The day rolls at the **human's**
-  midnight (`[timezone]`), the month on their first.
+- Counted per server per period in `george.db` (`mcp_budget`). The day rolls
+  at the **human's** midnight (the persona timezone), the month on their first.
 - Over budget, the tool result is a refusal that names the reset and says
-  not to retry: `mcp: rentals budget 1/day used (1 calls this day); resets
-  2026-09-16 00:00 PDT — do not retry; use what you already have and tell
+  not to retry: `mcp: github budget 50/day used (50 calls this day); resets
+  2026-10-03 00:00 PDT — do not retry; use what you already have and tell
   the human`. The model reports instead of burning.
-- `watch_add` on a budgeted server raises a shorter interval to the floor
-  (`1/day` → 24h; `50/month` → 14h24m) and says so in its reply. A watch
-  that still hits the wall — one created before the budget existed — is
-  parked until the reset instead of re-polling every tick; it stays
-  enabled and keeps its cursor.
 - `/tools` shows `budget_refused=N` once anything has been turned away.
 
 The count is of attempts: a call the vendor rejects still spent a slot,
-because it almost certainly spent one of theirs.
+because it almost certainly spent one of theirs. None of the four coding
+servers ships with a budget.
 
 ### Prefix enable (`dynamic_tools`)
 
@@ -299,25 +270,30 @@ By default (`dynamic_tools` omitted or `true`) MCP schemas stay **off** until
 the agent calls `mcp_enable` (list of prefixes, next Completer call in the
 same turn). The prompt lists on vs off under `[mcp prefixes]` and tells the
 model to review that list and enable a needed off prefix this turn. Brief hold
-idles out at 6h (morning/afternoon); short at 27h. Harness builtins stay on.
-Go-live is from zero — no seed of today's catalog.
+idles out at 6h; short at 27h. Harness builtins stay on.
 
-Small models / rollback — full catalog every turn, no `mcp_enable`:
+The four coding servers are `force = true` in the shipped manifest, so their
+schemas are on every turn and no round is spent on `mcp_enable` before an
+edit. With that manifest the block reads `on: fs (force); git (force); …`
+and lists nothing under `off`; an added server without `force` is what
+puts a prefix there.
+
+Small models / rollback, full catalog every turn, no `mcp_enable`:
 
 ```toml
 dynamic_tools = false
 ```
 
-Furniture that should never idle-drop while dynamic tools are on:
+A server that should never idle-drop while dynamic tools are on:
 
 ```toml
 [[server]]
-name = "google"
+name = "github"
 force = true          # whole server prefix; pair with a tight `tools` allowlist
 ```
 
-Or `MCP_ENABLE_FORCE=google__calendar,garmin__sleep`. Human overrides:
-`/brief` `/short` `/off`. `/tools` shows published vs available.
+Or `MCP_ENABLE_FORCE=fs,git,shell`. Human overrides: `/brief` `/short`
+`/off`. `/tools` shows published vs available.
 
 ---
 
@@ -328,8 +304,8 @@ Or `MCP_ENABLE_FORCE=google__calendar,garmin__sleep`. Human overrides:
 ```bash
 # from repo root
 make init          # ~/.config/george: env, mcp.toml, PERSONA.md, SELF.md
-# edit ~/.config/george/mcp.toml — uncomment / add servers you have binaries for
-# edit ~/.config/george/env — LLM_* (Gemini, Ollama, …)
+george tools-fetch # fs-mcp, git-mcp, shell-mcp, github-mcp into ~/.local/share/george/bin
+# edit ~/.config/george/env — LLM_* (Ollama, llama.cpp, or a hosted OpenAI-compatible API)
 
 make run           # same as `george` in this repo
 ```
@@ -339,10 +315,11 @@ In the REPL:
 ```text
 /status     # model, history, tool count
 /tools      # exact prefixed catalog the model sees
+/toolstats  # calls, aliases, unknown names, constrained retries since boot
 ```
 
-Ask something that needs a tool (“search for …”, “what’s on my calendar
-today”). Watch stderr JSON for `tool call`, `mcp tool name aliased`, or
+Ask something that needs a tool ("what's in `readme.md`?", "run `make
+test`"). Watch stderr JSON for `tool call`, `mcp tool name aliased`, or
 `tool call failed` with the suggestion string.
 
 Point at another config directory:
@@ -351,9 +328,10 @@ Point at another config directory:
 GEORGE_CONFIG_DIR=/path/to/other/george make run
 ```
 
-MCP servers stay commented until you grant them. Trust `/tools` plus the
-alias and suggestion strings when the model mangles a hyphen. Do not copy
-the MCP catalog into `PERSONA.md`.
+The four coding servers are granted by the manifest `george init` writes.
+Add another MCP server the same way. Trust `/tools` plus the alias and
+suggestion strings when the model mangles a name. Do not copy the MCP
+catalog into `PERSONA.md`.
 
 ### Unit tests (no LLM)
 
@@ -361,18 +339,19 @@ the MCP catalog into `PERSONA.md`.
 go test ./internal/mcp/ -count=1
 ```
 
-Covers catalog suggestions, underscore-prefix aliasing, and “did you mean”
-hints without spawning real MCP binaries.
+Covers catalog suggestions, separator and prefix aliasing, and "did you mean"
+hints without spawning real MCP binaries. The live eval
+([eval_setup.md](eval_setup.md)) boots the real releases and checks the
+coding catalog before any model call.
 
 ---
 
 ## Operator checklist
 
-- [ ] Only list servers this persona should have (`mcp.toml` = grant)
-- [ ] Prefer MCP `--tool-tier` / `tools = […]` so Flash/local models see tens of tools, not hundreds
-- [ ] After deploy, `/tools` once and confirm the published names
+- [ ] Only list servers this machine should run (`mcp.toml` = grant; they run as you)
+- [ ] Prefer MCP `--tool-tier` / `tools = […]` so a local model sees tens of tools, not hundreds
+- [ ] After `tools-fetch`, `/tools` once and confirm the published names
 - [ ] On weird tool loops: check logs for `aliased` vs repeated `unknown tool`
-- [ ] Static MCP binaries only if you ship distroless (no libc/shell for children)
 
 ---
 
@@ -380,5 +359,6 @@ hints without spawning real MCP binaries.
 
 - [architecture.md](architecture.md) — host restart sequence
 - [design.md](design.md) — env contract + MCP manifest sketch
+- [coding-mcp.md](coding-mcp.md) — `fs`, `git`, `shell`, `github`
 - [mcp-naming.md](mcp-naming.md) — package-author naming contract
 - [todo.md](todo.md) — work after the fork

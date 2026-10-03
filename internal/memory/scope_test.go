@@ -72,6 +72,51 @@ func TestBuiltin_RepoScope(t *testing.T) {
 	}
 }
 
+func TestBuiltin_MoveAfterRename(t *testing.T) {
+	ctx := context.Background()
+	m, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	m.Repo = "github.com/old/name"
+	if _, err := m.Store(ctx, memory.KindFact, "cmd/test", "make check"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store(ctx, memory.KindFact, "cmd/lint", "make lint-old"); err != nil {
+		t.Fatal(err)
+	}
+	m.Repo = "github.com/new/name"
+	newer, err := m.Store(ctx, memory.KindFact, "cmd/lint", "make lint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := m.ActiveByKindSubject(ctx, memory.KindFact, "cmd/test"); ok {
+		t.Fatal("before the move the old repo's fact should not be here")
+	}
+
+	n, err := m.Move(ctx, "github.com/old/name")
+	if err != nil || n != 2 {
+		t.Fatalf("Move = %d, %v; want 2", n, err)
+	}
+	if live, ok, _ := m.ActiveByKindSubject(ctx, memory.KindFact, "cmd/test"); !ok || live.Content != "make check" {
+		t.Fatalf("cmd/test after move = %#v ok=%v", live, ok)
+	}
+	live, ok, err := m.ActiveByKindSubject(ctx, memory.KindFact, "cmd/lint")
+	if err != nil || !ok || live.ID != newer.ID {
+		t.Fatalf("cmd/lint should stay the newer row %d, got %#v ok=%v err=%v", newer.ID, live, ok, err)
+	}
+	recall, err := m.Recall(ctx, "lint", 10)
+	if err != nil || len(recall) != 1 {
+		t.Fatalf("one live cmd/lint after the move, got %#v, %v", recall, err)
+	}
+	for _, bad := range []string{"", memory.ScopeUser, "github.com/new/name"} {
+		if _, err := m.Move(ctx, bad); err == nil {
+			t.Errorf("Move(%q) should refuse", bad)
+		}
+	}
+}
+
 func TestBuiltin_OldDBGetsScope(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "george.db"))

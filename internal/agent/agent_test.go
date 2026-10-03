@@ -1305,6 +1305,39 @@ func TestAgent_MemStats(t *testing.T) {
 	}
 }
 
+func TestAgent_MemoryMove(t *testing.T) {
+	store, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	store.Repo = "github.com/old/name"
+	if _, err := store.Store(ctx, memory.KindFact, "cmd/test", "make check"); err != nil {
+		t.Fatal(err)
+	}
+	store.Repo = "github.com/new/name"
+	a, err := agent.New(agent.Options{Completer: &fakeCompleter{}, Sessions: newMemHistory(), Memory: store, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := a.Handle(ctx, channel.Message{SessionID: "s", Text: "/memstats"})
+	if err != nil || !strings.Contains(stats, "scopes: github.com/old/name=1") {
+		t.Fatalf("memstats = %q %v", stats, err)
+	}
+	got, err := a.Handle(ctx, channel.Message{SessionID: "s", Text: "/memory move github.com/old/name"})
+	if err != nil || got != "moved 1 row(s) from github.com/old/name to github.com/new/name" {
+		t.Fatalf("move = %q %v", got, err)
+	}
+	stats, err = a.Handle(ctx, channel.Message{SessionID: "s", Text: "/memstats"})
+	if err != nil || !strings.Contains(stats, "github.com/new/name=1 (this repo)") {
+		t.Fatalf("memstats after move = %q %v", stats, err)
+	}
+	if usage, _ := a.Handle(ctx, channel.Message{SessionID: "s", Text: "/memory"}); !strings.HasPrefix(usage, "usage: /memory move") {
+		t.Fatalf("bare /memory = %q", usage)
+	}
+}
+
 func TestAgent_Tokens(t *testing.T) {
 	hist := newMemHistory()
 	hist.setSummary("s", "Facts: chris likes espresso\nVoice: gag: \"gull\"")

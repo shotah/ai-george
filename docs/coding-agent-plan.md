@@ -149,14 +149,14 @@ Mechanics, picked so that most of it is imported or already in the tree:
 
 ## Input on stdio
 
-"Chat-shaped" means the input model of Telegram or Slack. People send short bubbles ("hey", "can you", "check the build"), so the agent waits 2 seconds for the burst to settle and merges it. A bubble that arrives during a turn steers that turn. None of this happens on stdio today. `stdio.Run` calls `handle` and blocks until the reply is done before it reads the next line. Nothing is read during a turn, so nothing steers. And a pasted 40-line stack trace becomes 40 turns, one after another.
+"Chat-shaped" means the input model of Telegram or Slack. People send short bubbles ("hey", "can you", "check the build"), so the agent waited 2 seconds for the burst to settle and merged it. A bubble that arrived during a turn steered that turn. None of that fits stdio. `stdio.Run` calls `handle` and blocks until the reply is done before it reads the next message. Nothing is read during a turn, so nothing steers.
 
-The coding REPL needs these instead:
+The coding REPL has these instead:
 
-- **A paste is one message.** Read bracketed paste (the terminal wraps a paste in `ESC[200~` … `ESC[201~`), so a paste of any length arrives as one message and Enter sends it. Import a line editor that already handles this, such as [`github.com/chzyer/readline`](https://github.com/chzyer/readline) or [`github.com/reeflective/readline`](https://github.com/reeflective/readline). Do not write a terminal parser. A piped stdin (not a TTY) is read to EOF as one message.
-- **Ctrl-C cancels the turn, not the process.** The first Ctrl-C does what `/cancel` does. A second one at an idle prompt exits. Today `signal.NotifyContext` kills the whole process on the first one.
-- **No steering.** Delete `coalesce.go`. To change direction, press Ctrl-C and type the new instruction.
-- **History and arrow keys** come from the same line editor.
+- **A paste is one message.** Done. On a terminal the reader is `golang.org/x/term` with bracketed paste on (the terminal wraps a paste in `ESC[200~` … `ESC[201~`), so a paste of any length arrives as one message and the next Enter sends it. Raw mode is held only while a message is being typed. Piped stdin (not a TTY) is one message per line. `x/term` was picked over `chzyer/readline` because it is maintained by the Go team and does the one thing needed.
+- **Ctrl-C cancels the turn, not the process.** Done. A SIGINT during a turn cancels that turn's context and the prompt comes back (`TestChannel_InterruptCancelsTurnOnly`). At the prompt, Ctrl-C exits the same way EOF does. SIGTERM still cancels the whole run.
+- **No steering.** Done. `coalesce.go` is gone. To change direction, press Ctrl-C and type the new instruction.
+- **History and arrow keys** are still open. `x/term` gives line editing within one message, not a history across messages.
 
 ## Goldens first
 
@@ -200,8 +200,8 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 4. **Clock.** Delete cron, the planner, examples, `[wait]`, watches, the slash commands they owned, and their notes and kernel sections. `channel.Pusher` goes if nothing else uses it.
 5. **Household.** Delete aims, the todo board, the horizon and hours stamps, and the consolidator, and drop those subjects from the `memory` docs and tests.
 6. **Off Docker.** Delete the container files, heartbeat, doctor, `status`, drain, SIGHUP reload, and `auth`. Add the env file, the XDG paths, the root from the cwd, and `${GEORGE_ROOT}` in the manifest. Gate: `cd /tmp/scratch && george` boots against `~/.config/george/` with no `.env` in that directory. Done: the container files, `deploy/`, heartbeat, doctor, `status`, and `auth` are gone. The env file, the XDG defaults, the bin dir on `PATH`, and the root from the cwd are in, and the gate passed in a fresh `HOME` ([todo.md](todo.md#8-work-list)).
-7. **Memory scope.** Add the `scope` column, the repo id, and the session per repo. Gate: a row stored in repo A does not hydrate in repo B, and a `user` row hydrates in both.
-8. **stdio input.** Add the line editor, bracketed paste, and Ctrl-C to cancel, and delete coalescing. Gate: a 40-line paste is one turn.
+7. **Memory scope.** Add the `scope` column, the repo id, and the session per repo. Gate: a row stored in repo A does not hydrate in repo B, and a `user` row hydrates in both. Done: `repoID` in `cmd/george/root.go`, `scope` added on open, reads take `user` plus this repo, and `/memory move <old repo id>` for a renamed remote ([todo.md](todo.md#8-work-list), item 1).
+8. **stdio input.** Add the line editor, bracketed paste, and Ctrl-C to cancel, and delete coalescing. Gate: a 40-line paste is one turn. Done with `golang.org/x/term`; input history is still open (see [Input on stdio](#input-on-stdio)).
 9. **Contract.** Move the seed's rules into the embedded contract, drop `SyncKernel`, and ship an empty `PERSONA.md` template. Gate: the eval passes at the same rate as before the move. Then trim the assistant parts one cut at a time under `-eval.n=5`, and add the memory lines (repo versus you, and repo files first).
 10. **Context budget.** Read `/tokens` on a long session, then set the history, result, and iteration defaults.
 11. **Evals.** Add `results: [...]` and `script` to the harness and the dot alias to the host, then the coding fixtures, one at a time, each green at `-eval.n=5` before the next one starts. Add a memory fixture: "tests here run with `make test`" lands a repo-scope `cmd/test` row.
@@ -226,7 +226,7 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 
 ## Still open
 
-- **Repo id after a remote rename.** An `origin` URL change orphans the repo's rows. Either live with it, or add `/memory move <old>` later.
+- **Repo id after a remote rename.** An `origin` URL change orphans the repo's rows and its session. `/memory move <old repo id>` brings the memory rows to the new id (`/memstats` lists the ids); the old session is not moved, so the conversation starts fresh under the new id.
 
 ## Done when
 
