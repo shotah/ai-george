@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/shotah/george/internal/provider"
 )
 
 func view(name, path string) callView {
@@ -116,6 +118,60 @@ func TestLanes_Contradiction(t *testing.T) {
 	looked.record("fs__file_get", view("", "calc.go").args)
 	if got := looked.contradiction("No code changed: the file already adds."); got != "" {
 		t.Errorf("read, no patch, no change is true: %q", got)
+	}
+}
+
+func write(l *turnLanes, name string, args map[string]string) {
+	raw, _ := json.Marshal(args)
+	l.record(name, raw)
+}
+
+func TestLanes_Unfinished(t *testing.T) {
+	fresh := func() *turnLanes { return lanesFrom(withTurnLanes(context.Background(), "add Mul")) }
+
+	l := fresh()
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "old": "}\n", "new": "}\n\nfunc Mul(a, b int) int {\n\treturn a * b\n}\n"})
+	for range 2 {
+		if got := l.unfinished(true); !strings.Contains(got, "Mul") || !strings.Contains(got, "test") {
+			t.Fatalf("new func, no test: %q", got)
+		}
+	}
+	if got := l.unfinished(true); !strings.Contains(got, "shell__command_run") {
+		t.Fatalf("then the check: %q", got)
+	}
+	if got := l.unfinished(true); got != "" {
+		t.Fatalf("each fires once: %q", got)
+	}
+
+	l = fresh()
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "diff": "@@\n+func (c *Calc) Mul(a, b int) int { return a * b }\n"})
+	write(l, "fs__file_patch", map[string]string{"path": "calc_test.go", "new": "func TestMul(t *testing.T) {}\n"})
+	write(l, "shell__command_run", map[string]string{"command": "go test ./..."})
+	if got := l.unfinished(true); got != "" {
+		t.Fatalf("test written and run: %q", got)
+	}
+
+	l = fresh()
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "old": "\treturn a - b", "new": "\treturn a + b"})
+	write(l, "shell__command_run", map[string]string{"command": "go test ./..."})
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "old": "a + b", "new": "b + a"})
+	if got := l.unfinished(false); got != "" {
+		t.Fatalf("no command tool, no check nudge: %q", got)
+	}
+	if got := l.unfinished(true); !strings.Contains(got, "shell__command_run") {
+		t.Fatalf("a write after the run needs another run: %q", got)
+	}
+
+	l = fresh()
+	write(l, "fs__file_patch", map[string]string{"path": "a.go", "old": "func Hello(", "new": "func Hello("})
+	write(l, "fs__file_patch", map[string]string{"path": "greet.txt", "old": "hi", "new": "hello"})
+	write(l, "fs__file_create", map[string]string{"path": "notes.md", "body": "func Fake() {}\n"})
+	write(l, "shell__command_run", map[string]string{"command": "go test ./..."})
+	if got := l.unfinished(true); got != "" {
+		t.Fatalf("no new func, text files, run after: %q", got)
+	}
+	if !canRunCommand([]provider.ToolDef{{Name: "fs__file_get"}, {Name: "shell__command_run"}}) || canRunCommand([]provider.ToolDef{{Name: "fs__file_get"}}) {
+		t.Fatal("canRunCommand")
 	}
 }
 

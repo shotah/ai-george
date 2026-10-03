@@ -19,14 +19,12 @@ import (
 // each iteration, so 2 rounds (not 4) still bounds in-turn prefill.
 const keepRecentToolRounds = 2
 
-// collapsedToolArgs is the stub left on aging assistant tool-call arguments.
-// Name and id stay so the provider can pair the collapsed result.
-const collapsedToolArgs = "{}"
-
 // collapseOldToolResults shortens tool payloads from rounds older than the
-// recent window and stubs the matching assistant tool-call argument JSON.
-// Everything in the last keepRecentToolRounds rounds stays whole, however
-// many calls a round made and whatever they were named.
+// recent window. Everything in the last keepRecentToolRounds rounds stays
+// whole, however many calls a round made and whatever they were named.
+// Tool-call arguments always stay whole: the model copies the shape of its
+// own past calls, and a `{}` stub there came back as `fs__file_get {}` from
+// round 4 on.
 func collapseOldToolResults(messages []provider.Message) []provider.Message {
 	roundOf := make(map[string]int)
 	rounds := 0
@@ -47,7 +45,6 @@ func collapseOldToolResults(messages []provider.Message) []provider.Message {
 
 	out := make([]provider.Message, len(messages))
 	copy(out, messages)
-	collapsedIDs := make(map[string]bool)
 	seen := 0 // rounds started before this position — the round of an unpaired result
 	for i, m := range messages {
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
@@ -69,43 +66,8 @@ func collapseOldToolResults(messages []provider.Message) []provider.Message {
 			name = "result"
 		}
 		out[i].Content = fmt.Sprintf("[tool %s: %d chars, truncated]", name, len(m.Content))
-		if m.ToolCallID != "" {
-			collapsedIDs[m.ToolCallID] = true
-		}
-	}
-	if len(collapsedIDs) > 0 {
-		collapseOldToolCallArgs(out, collapsedIDs)
 	}
 	return out
-}
-
-// collapseOldToolCallArgs stubs argument JSON on assistant tool calls whose
-// results were collapsed. Copies the ToolCalls slice so the caller's messages
-// are not mutated.
-func collapseOldToolCallArgs(messages []provider.Message, collapsedIDs map[string]bool) {
-	for i, m := range messages {
-		if m.Role != provider.RoleAssistant || len(m.ToolCalls) == 0 {
-			continue
-		}
-		copied := false
-		for j, tc := range m.ToolCalls {
-			if !collapsedIDs[tc.ID] {
-				continue
-			}
-			if !copied {
-				calls := make([]provider.ToolCall, len(m.ToolCalls))
-				copy(calls, m.ToolCalls)
-				messages[i].ToolCalls = calls
-				copied = true
-			}
-			messages[i].ToolCalls[j] = stubToolCallArgs(messages[i].ToolCalls[j])
-		}
-	}
-}
-
-func stubToolCallArgs(tc provider.ToolCall) provider.ToolCall {
-	tc.Arguments = collapsedToolArgs
-	return tc
 }
 
 func toolCallNames(messages []provider.Message) map[string]string {

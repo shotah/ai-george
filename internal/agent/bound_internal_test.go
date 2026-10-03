@@ -7,7 +7,9 @@ import (
 	"github.com/shotah/george/internal/provider"
 )
 
-func TestCollapseOldToolCallArgs(t *testing.T) {
+// An aged round loses its payload, never its arguments: a `{}` stub there
+// taught the model to send `fs__file_get {}`.
+func TestCollapse_OldArgsStayWhole(t *testing.T) {
 	fat := `{"origin":"37.4,-122.1","destination":"37.8,-122.4"}` + strings.Repeat("x", 200)
 
 	orig := []provider.Message{
@@ -34,8 +36,8 @@ func TestCollapseOldToolCallArgs(t *testing.T) {
 	if !strings.HasPrefix(out[1].Content, "[tool maps__route_eta:") {
 		t.Fatalf("old result not collapsed: %q", out[1].Content)
 	}
-	if out[0].ToolCalls[0].Arguments != collapsedToolArgs {
-		t.Fatalf("old args = %q, want stub", out[0].ToolCalls[0].Arguments)
+	if out[0].ToolCalls[0].Arguments != fat {
+		t.Fatalf("old args = %q, want them whole", out[0].ToolCalls[0].Arguments)
 	}
 	if out[2].ToolCalls[0].Arguments != `{"query":"coffee"}` {
 		t.Fatalf("recent args collapsed: %q", out[2].ToolCalls[0].Arguments)
@@ -75,15 +77,15 @@ func TestCollapse_UnreadBatchStaysWhole(t *testing.T) {
 		}
 	}
 	for j, tc := range out[1].ToolCalls {
-		if tc.Arguments == collapsedToolArgs {
-			t.Fatalf("call %d args stubbed in the unread batch", j)
+		if tc.Arguments != msgs[1].ToolCalls[j].Arguments {
+			t.Fatalf("call %d args changed in the unread batch: %q", j, tc.Arguments)
 		}
 	}
 }
 
 // The window counts rounds, not payloads: a three-call round followed by a
 // one-call round is two rounds and stays whole for the reply; a third round
-// ages the first one out — all three of its payloads and args together.
+// ages the first one out — all three of its payloads together, args kept.
 func TestCollapse_WindowIsRoundsNotPayloads(t *testing.T) {
 	msgs := append(denverBatch(),
 		provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
@@ -111,8 +113,8 @@ func TestCollapse_WindowIsRoundsNotPayloads(t *testing.T) {
 		}
 	}
 	for j, tc := range out[1].ToolCalls {
-		if tc.Arguments != collapsedToolArgs {
-			t.Fatalf("aged round's call %d args not stubbed: %q", j, tc.Arguments)
+		if tc.Arguments != msgs[1].ToolCalls[j].Arguments {
+			t.Fatalf("aged round's call %d args changed: %q", j, tc.Arguments)
 		}
 	}
 	if out[6].Content != "stored" || out[8].Content != "scheduled" {

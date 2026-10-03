@@ -1,0 +1,21 @@
+{
+  "name": "test_with_behaviour",
+  "why": "New behaviour comes with its test: Mul lands in calc.go, a test that calls Mul lands in calc_test.go, and go test runs.",
+  "inbound": "Add a Mul function to calc.go that multiplies two ints.",
+  "force": ["fs", "shell"],
+  "tools_from": ["fs", "shell"],
+  "live": ["fs", "shell"],
+  "workspace": {
+    "go.mod": "module calc\n\ngo 1.22\n",
+    "calc.go": "package calc\n\n// Add returns the sum of a and b.\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+    "calc_test.go": "package calc\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(2, 3) != 5 {\n\t\tt.Fatal(\"Add(2, 3) != 5\")\n\t}\n}\n"
+  },
+  "expect": {
+    "round_budget": 5,
+    "files": {
+      "calc.go": "func Mul\\(a, b int\\) int",
+      "calc_test.go": "(?s)func Test\\w*\\(t \\*testing\\.T\\).*\\bMul\\("
+    },
+    "tools_called": [{ "name": "shell__command_run", "args_regex": "go test" }]
+  }
+}

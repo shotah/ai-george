@@ -241,7 +241,7 @@ record.
 | History caps | Drop oldest past `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_TOKENS` (chars/4 estimate). Filler strip is prompt-only, on user lines older than the last 40. SQLite stays verbatim. |
 | Trimmed turns | Gone. No completion folds them into `session.summary`. A summary already in an older `george.db` is still read until `/reset`. |
 | Tool truncate | Each tool result capped at `TOOL_RESULT_MAX_CHARS` |
-| Tool collapse | Payloads older than the last 2 tool rounds become one-line markers; matching tool-call args are stubbed to `{}`. A round is one model-emitted batch. Session history stores the reply text, not tool payloads. |
+| Tool collapse | Payloads older than the last 2 tool rounds become one-line markers. Tool-call args stay whole: a `{}` stub there taught the model to send empty calls. A round is one model-emitted batch. Session history stores the reply text, not tool payloads. |
 | Iteration cap | `TOOL_MAX_ITERATIONS` rounds with tools, then one landing call |
 
 `/new` wipes that session. `Voice:` folds into `SELF.md` when self-notes are

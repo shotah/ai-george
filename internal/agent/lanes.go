@@ -6,9 +6,17 @@ import (
 	"errors"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+
+	"github.com/shotah/george/internal/provider"
 )
+
+// canRunCommand is a command tool among this turn's defs.
+func canRunCommand(defs []provider.ToolDef) bool {
+	return slices.ContainsFunc(defs, func(d provider.ToolDef) bool { return laneOf(d.Name) == laneRun })
+}
 
 // The two contract rules a live run kept breaking, held in code: a patch
 // waits on a read of that file this turn, and commit or stage waits on the
@@ -55,6 +63,14 @@ type turnLanes struct {
 	read     map[string]bool
 	patched  []string
 	ran      bool
+
+	// The finish line: code written, its test, and a command after it.
+	codeWritten  bool
+	ranSinceCode bool
+	testWritten  bool
+	addedFuncs   []string
+	testNudges   int
+	checkNudged  bool
 }
 
 type turnLanesKey struct{}
@@ -122,6 +138,7 @@ func (l *turnLanes) record(name string, args json.RawMessage) {
 	defer l.mu.Unlock()
 	if k == laneRun {
 		l.ran = true
+		l.ranSinceCode = true
 		return
 	}
 	if k != laneRead && k != lanePatch {
@@ -131,8 +148,73 @@ func (l *turnLanes) record(name string, args json.RawMessage) {
 		l.read[p] = true
 		if k == lanePatch || strings.HasSuffix(strings.ToLower(name), "file_create") {
 			l.patched = append(l.patched, p)
+			l.noteWrite(p, args)
 		}
 	}
+}
+
+var (
+	codeExt  = regexp.MustCompile(`(?i)\.(go|py|js|jsx|ts|tsx|rs|java|kt|c|h|cc|cpp|hpp|rb|php|cs|swift|scala)$`)
+	testFile = regexp.MustCompile(`(?i)(_test\.(go|py)|(^|/)test_[^/]*\.py|\.(test|spec)\.[jt]sx?|Test\.(java|kt)|_spec\.rb)$`)
+	funcDecl = regexp.MustCompile(`(?m)^\s*(?:func(?:\s*\([^)]*\))?|def|function|fn|pub fn)\s+([A-Za-z_]\w*)\s*\(`)
+)
+
+// noteWrite marks a code write, a test write, and the functions it adds:
+// declared in what was written, not in what it replaced. Caller holds mu.
+func (l *turnLanes) noteWrite(p string, args json.RawMessage) {
+	if !codeExt.MatchString(p) {
+		return
+	}
+	l.codeWritten = true
+	l.ranSinceCode = false
+	if testFile.MatchString(p) {
+		l.testWritten = true
+		return
+	}
+	var a struct{ Old, New, Diff, Body, Content string }
+	_ = json.Unmarshal(args, &a)
+	added, removed := a.New+a.Body+a.Content, a.Old
+	for _, line := range strings.Split(a.Diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+"):
+			added += line[1:] + "\n"
+		case strings.HasPrefix(line, "-"):
+			removed += line[1:] + "\n"
+		}
+	}
+	had := map[string]bool{}
+	for _, m := range funcDecl.FindAllStringSubmatch(removed, -1) {
+		had[m[1]] = true
+	}
+	for _, m := range funcDecl.FindAllStringSubmatch(added, -1) {
+		if !had[m[1]] && !slices.Contains(l.addedFuncs, m[1]) {
+			l.addedFuncs = append(l.addedFuncs, m[1])
+		}
+	}
+}
+
+// unfinished is the nudge for a turn about to reply with code work left:
+// a new function with no test written (twice: after the first, the model
+// often runs the old tests and stops), or code written with no command run
+// after it (once). canRun is a command tool this turn.
+func (l *turnLanes) unfinished(canRun bool) string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.addedFuncs) > 0 && !l.testWritten && l.testNudges < 2 {
+		l.testNudges++
+		return "[system] You added " + strings.Join(l.addedFuncs, ", ") + " but wrote no test this turn. " +
+			"New behaviour comes with its test: read the matching test file, add a test that calls it, then run the tests."
+	}
+	if canRun && l.codeWritten && !l.ranSinceCode && !l.checkNudged {
+		l.checkNudged = true
+		return "[system] You changed code but no command ran after it. " +
+			"Run the repo's test and lint now with shell__command_run, then reply naming what changed and what they returned."
+	}
+	return ""
 }
 
 // A reply that reports a check result, a change, or no change. The turn's

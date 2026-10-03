@@ -886,6 +886,20 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				)
 				continue
 			}
+			if !final {
+				if nudge := lanesFrom(ctx).unfinished(canRunCommand(toolDefs)); nudge != "" {
+					a.log.Warn("reply lands with code work unfinished",
+						"chars", len(res.Content),
+						"iteration", iter+1,
+					)
+					recoveries++
+					messages = append(messages,
+						provider.Message{Role: provider.RoleAssistant, Content: res.Content},
+						provider.Message{Role: provider.RoleUser, Content: nudge},
+					)
+					continue
+				}
+			}
 			return res.Content, nil
 		}
 		if a.tools == nil {
