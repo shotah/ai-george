@@ -847,8 +847,7 @@ func contentToString(res *mcpsdk.CallToolResult) string {
 			}
 		case *mcpsdk.ImageContent, *mcpsdk.AudioContent:
 			// Binary stays off the model prompt (TOOL_RESULT_MAX_CHARS would
-			// truncate it anyway). Chat pictures go via PhotoSink; pendant
-			// avatar_get writes a path instead of a bubble.
+			// truncate it anyway); a count stands in when there is no text.
 			images++
 		default:
 			b, err := json.Marshal(v)

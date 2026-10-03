@@ -59,7 +59,7 @@ const budgetExhaustedNote = "[system] Tool budget exhausted: all %d tool rounds 
 // It is recency-weighted (end of the cached prefix): fan out independent
 // calls in one Completer response so the standing prompt is not re-billed
 // per lookup. One visible line for the batch feeds TOOL_TRACE.
-const toolNarrationNote = `When you need tools, emit every independent call in this same response — they run together. One short visible line for the whole batch (e.g. "Reading the file and checking git status"), under a dozen words, then the calls. A later round is only for calls that need a prior result.`
+const toolNarrationNote = `When you need tools, emit every independent call in this same response — they run together. One short visible line for the whole batch (e.g. "Reading a.go and b.go"), under a dozen words, then the calls. A later round is only for calls that need a prior result: a patch needs the read, a check needs the patch, git status needs the check.`
 
 // enableReviewNote sits after the clock when dynamic tools are on so the
 // on/off index is not dropped in a long chat. mcp_enable must precede the
@@ -1258,6 +1258,10 @@ func defersPendingWork(content string) bool {
 		"i am going to try", "i'm going to try", "going to try to access",
 		"i am going to access", "i'm going to access", "going to access that",
 		"while i confirm", "while i check the connection", "confirm the connection",
+		"let me first", "let me now", "let me patch", "let me apply", "let me update",
+		"let me rename", "let me run", "let me read", "let me edit",
+		"i'll first", "i'll now", "now i'll", "next, i'll", "next i'll",
+		"i'll patch", "i'll apply", "i'll edit", "i'll run the",
 	}
 	for _, cue := range cues {
 		if strings.Contains(text, cue) {
