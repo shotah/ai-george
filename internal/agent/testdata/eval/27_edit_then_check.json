@@ -1,6 +1,6 @@
 {
   "name": "edit_then_check",
-  "why": "A coding turn reads the file, then patches that one file, then runs the check, then shows git status. Each step waits on the one before it.",
+  "why": "A coding turn reads the file, then patches that one file, then runs the check, then shows git status. Each step waits on the one before it; status may ride with the check, since the check changes no file.",
   "inbound": "greet.txt says hi. Change that line to hello, then run wc -l greet.txt, then show git status.",
   "force": ["fs", "shell", "git"],
   "tools_from": ["fs", "shell", "git"],
@@ -34,7 +34,13 @@
       { "name": "git__status_get" }
     ],
     "tools_not_called": ["git__commit_create", "git__stage_update"],
-    "order": ["fs__file_get", "fs__file_patch", "shell__command_run", "git__status_get"],
+    "any_of": [
+      { "order": ["fs__file_get", "fs__file_patch", "shell__command_run", "git__status_get"] },
+      {
+        "order": ["fs__file_get", "fs__file_patch", "git__status_get"],
+        "same_round": [[{ "name": "shell__command_run" }, { "name": "git__status_get" }]]
+      }
+    ],
     "reply_regex": "(?i)hello"
   }
 }

@@ -44,9 +44,11 @@ func run() int {
 		logger.Error("mcp bin dir on PATH", "err", err)
 		return 1
 	}
+	repo := repoID(root)
 
 	logger.Info("george starting",
 		"root", root,
+		"repo", repo,
 		"version", version,
 		"model", cfg.LLMModel,
 		"max_tokens", cfg.LLMMaxTokens,
@@ -136,6 +138,7 @@ func run() int {
 				logger.Error("memory open failed", "err", err)
 				return 1
 			}
+			memBuiltin.Repo = repo
 			memBackend = memBuiltin
 			logger.Info("memory ready", "backend", "builtin")
 		case strings.HasPrefix(cfg.MemoryBackend, "mcp:"):
@@ -293,6 +296,7 @@ func run() int {
 	}
 	ch := stdio.New()
 	ch.StreamReplies = cfg.StreamReplies
+	ch.SessionID = repo
 
 	if runErr := ch.Run(ctx, ag.Handle); runErr != nil {
 		logger.Error("stdio stopped", "err", runErr)

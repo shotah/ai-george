@@ -42,6 +42,21 @@ func TestChannel_Run(t *testing.T) {
 	}
 }
 
+func TestChannel_SessionIDIsTheRepo(t *testing.T) {
+	var out, errOut bytes.Buffer
+	ch := &stdio.Channel{In: strings.NewReader("hi\n"), Out: &out, Err: &errOut, SessionID: "github.com/me/a"}
+	var got string
+	if err := ch.Run(context.Background(), func(_ context.Context, msg channel.Message) (string, error) {
+		got = msg.SessionID
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "github.com/me/a" {
+		t.Fatalf("SessionID = %q", got)
+	}
+}
+
 func TestChannel_SkipsBlankAndHandlesError(t *testing.T) {
 	in := strings.NewReader("\n\nboom\n/exit\n")
 	var out, errOut bytes.Buffer

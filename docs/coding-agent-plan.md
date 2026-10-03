@@ -13,7 +13,7 @@ The loop core stays. It is the reason for the fork ([fork-cli-agent.md](fork-cli
 - name repair: prefix alias, five closest names, one constrained retry, printed-call salvage, a landing call
 - round collapse: the last two rounds stay whole and older rounds become a one-line marker, with no completion spent
 - `[mcp prefixes]` plus `mcp_enable`, with `force = true` on the four coding servers
-- the session fold, which is one completion
+- the session trim: the oldest rows are deleted, with no completion spent (the summarizer is gone)
 - `/toolstats`, `/tokens`, `/perf`, `/tools`, `/new`, `/cancel`
 - prompt goldens and `make integration-test`
 
@@ -52,7 +52,7 @@ Once the four mouths are gone, `go mod tidy` should drop `discordgo`, `go-telegr
 | Builtin memory | Gains a scope: the human, or this repo. See [Memory](#memory-you-and-the-repo). |
 | `SELF.md` and `self_note` | Become the human's coding taste. They move to the user config dir and carry over to every repo. |
 | `web_search` (Brave) | Unchanged. Off without `BRAVE_SEARCH_API_KEY`, which is already how it behaves. |
-| Session | One conversation per repo, not one per process. Today the id is the constant `channel.AgentSession = "george"`. |
+| Session | One conversation per repo, not one per process. The id is the repo id (`repoID` in `cmd/george/root.go`); `channel.AgentSession = "george"` is only the fallback when a channel names none. |
 
 ## What changes
 
@@ -118,7 +118,7 @@ There is no reason the agent can't remember a repo. The assistant memory is abou
 
 How it lands in the code, with the least change:
 
-- `memory` gets one column: `scope TEXT NOT NULL DEFAULT 'user'`. `user` means you. A repo id means that repo. Hydration reads `scope = 'user' OR scope = <this repo>`. FTS, kinds, supersede-by-subject, and the `memory_*` tools stay as they are. `memory_store` gains `scope: "repo" | "user"`, defaulting to `repo`, because most coding facts are about the tree.
+- `memory` gets one column: `scope TEXT NOT NULL DEFAULT 'user'`. `user` means you. A repo id means that repo. Hydration reads `scope = 'user' OR scope = <this repo>`. FTS, kinds, supersede-by-subject (inside one scope), and the `memory_*` tools stay as they are. The scope follows the kind instead of a new `memory_store` argument: `preference` and `person` are `user`, and `fact`, `insight`, and `episode` are the repo's. The contract already splits them that way (`pref/…` is how you work, `cmd/test` is how the tree works), and a small model has one less argument to get wrong.
 - **Repo id.** Use the normalized `origin` URL when there is one (it survives a re-clone and is the same in every worktree). Otherwise use the absolute path of the git toplevel. Otherwise use the cwd.
 - **Goals** are `goal/<slug>` rows in the repo scope. They reach the prompt through hydration (FTS on the turn's text, at most about 30 rows), not through a standing stamp. This is the piece of the aims ledger worth keeping. It has no scoring, no ladder, and no planner. A finished goal is `memory_forget`.
 - **Files in the repo win.** `AGENTS.md`, `CONTRIBUTING.md`, and the `Makefile` are the team's memory, and the agent reads them with `fs__file_get`. A memory row is what the agent learned that is not written there. The seed says so in one line. Memory never writes into the repo.

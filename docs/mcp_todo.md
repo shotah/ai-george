@@ -2,7 +2,12 @@
 
 Requests for the four coding servers. Each comes from a live gate run on `qwen3-coder:30b-a3b-q4_K_M` with the real `fs`, unless the item names another model (see [eval_setup.md](eval_setup.md)). Each item names the server, what the model did, the change, and the check that proves it from this repo with no change here. Names follow [mcp-naming.md](mcp-naming.md); the tool sets are [coding-mcp.md](coding-mcp.md).
 
-Run a check with `make integration-test EVAL_ARGS='-eval.n=3 -eval.only=<fixture>'`. The eval always fetches each server's `latest` release.
+Run a check with `make integration-test EVAL_ARGS='-eval.n=3 -eval.only=<fixture>'`. The eval fetches each server's `latest` release once and caches it; clear `/tmp/george-eval-mcp` after a release.
+
+Status, on `fs` 0.0.4, `git` 0.0.3, `shell` 0.0.2, `github` 0.0.3:
+
+- Seen working in gate logs: 1 (the model renames with `old`/`new`, `parallel_patches` 5/5), 2 (`new is required, e.g. …`, fixed the next round), 3 (patch results now echo the change), and 6 (`commit_only_when_asked` 5/5, no `stage_update`).
+- Shipped, but no gate run has hit it yet: 4 (hunk mismatch lines), 5 (diff shape errors; the model now uses `old`/`new`, not diffs), and 7 (`GITHUB_TOKEN` message).
 
 ## `fs-mcp`
 

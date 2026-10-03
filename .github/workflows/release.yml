@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   # Behavior gate: the shipped persona seed against the live model
-  # (docs/evaluation.md). Fails when the LLM_* secret and variables are absent.
+  # (docs/eval_setup.md). Fails when the LLM_* secret and variables are absent.
   eval:
     uses: ./.github/workflows/eval.yml
     secrets: inherit

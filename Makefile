@@ -99,9 +99,9 @@ race: ## Run tests with the race detector (requires CGO)
 	CGO_ENABLED=1 go test -race ./...
 
 # Behavioral eval against a live model (docs/eval_setup.md). Sources .env for
-# LLM_BASE_URL / LLM_API_KEY / LLM_MODEL; skips when they are unset. Fixtures:
+# LLM_BASE_URL / LLM_API_KEY / LLM_MODEL; fails when they are unset. Fixtures:
 # internal/agent/testdata/eval. EVAL_ARGS='-eval.n=10 -eval.only=edit_then_check'.
-# A turn is ~15s; 7 fixtures x 10 runs is ~20min, so the go test timeout is
+# A turn is ~20s; 6 fixtures x 10 runs is ~20min, so the go test timeout is
 # explicit (the default 10m kills the run mid-fixture).
 EVAL_ARGS ?=
 EVAL_TIMEOUT ?= 120m

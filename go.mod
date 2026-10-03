@@ -9,6 +9,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/openai/openai-go/v3 v3.44.0
 	github.com/pelletier/go-toml/v2 v2.4.3
+	gopkg.in/ini.v1 v1.67.3
 	modernc.org/sqlite v1.54.0
 )
 

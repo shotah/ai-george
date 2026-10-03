@@ -18,10 +18,33 @@ const (
 	episodeTTL          = 30 * 24 * time.Hour
 )
 
+// ScopeUser marks a row about the human, read in every repo.
+const ScopeUser = "user"
+
 // Builtin is the SQLite + FTS5 memory backend in george.db.
 type Builtin struct {
 	db    *sql.DB
 	owned bool // close db on Close when we opened it
+	// Repo is this process's repo id. Facts, goals, insights, and episodes
+	// are stored under it and read only in that repo; preferences and people
+	// are ScopeUser. Empty stores and reads every row as ScopeUser.
+	Repo string
+}
+
+// scopeFor is the scope a row of kind is stored and superseded under.
+func (b *Builtin) scopeFor(kind string) string {
+	if b.Repo == "" || kind == KindPreference || kind == KindPerson {
+		return ScopeUser
+	}
+	return b.Repo
+}
+
+// readScope is the repo half of the `scope IN (user, repo)` read filter.
+func (b *Builtin) readScope() string {
+	if b.Repo == "" {
+		return ScopeUser
+	}
+	return b.Repo
 }
 
 // Open opens (or creates) memory tables in dataDir/george.db.
@@ -98,6 +121,15 @@ func (b *Builtin) migrate() error {
 	for _, q := range stmts {
 		if _, err := b.db.Exec(q); err != nil {
 			return fmt.Errorf("memory: migrate: %w", err)
+		}
+	}
+	var hasScope int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('memory') WHERE name = 'scope'`).Scan(&hasScope); err != nil {
+		return fmt.Errorf("memory: migrate: %w", err)
+	}
+	if hasScope == 0 {
+		if _, err := b.db.Exec(`ALTER TABLE memory ADD COLUMN scope TEXT NOT NULL DEFAULT 'user'`); err != nil {
+			return fmt.Errorf("memory: migrate scope: %w", err)
 		}
 	}
 	return nil
@@ -203,10 +235,10 @@ func (b *Builtin) Store(ctx context.Context, kind, subject, content string) (Ent
 	}
 
 	res, err := b.db.ExecContext(ctx, `
-		INSERT INTO memory (kind, subject, content, source, confidence, created_at, updated_at, expires_at, consolidated)
-		VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, 0)`,
+		INSERT INTO memory (kind, subject, content, source, confidence, created_at, updated_at, expires_at, consolidated, scope)
+		VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, 0, ?)`,
 		kind, subject, content, SourceChat,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expires,
+		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expires, b.scopeFor(kind),
 	)
 	if err != nil {
 		return Entry{}, fmt.Errorf("memory: store: %w", err)
@@ -247,10 +279,10 @@ func (b *Builtin) ActiveByKindSubject(ctx context.Context, kind, subject string)
 	row := b.db.QueryRowContext(ctx, `
 		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
 		FROM memory
-		WHERE kind = ? AND subject = ? AND superseded_by IS NULL
+		WHERE kind = ? AND subject = ? AND superseded_by IS NULL AND scope = ?
 		  AND (expires_at IS NULL OR expires_at > ?)
 		ORDER BY updated_at DESC
-		LIMIT 1`, kind, subject, now)
+		LIMIT 1`, kind, subject, b.scopeFor(kind), now)
 	e, err := scanEntry(row)
 	if err == sql.ErrNoRows {
 		return Entry{}, false, nil
@@ -373,10 +405,11 @@ func (b *Builtin) listActive(ctx context.Context, limit int) ([]Entry, error) {
 		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
 		FROM memory
 		WHERE superseded_by IS NULL
+		  AND scope IN (?, ?)
 		  AND NOT (kind = ? AND consolidated != 0)
 		  AND (expires_at IS NULL OR expires_at > ?)
 		ORDER BY updated_at DESC
-		LIMIT ?`, KindEpisode, now, limit)
+		LIMIT ?`, ScopeUser, b.readScope(), KindEpisode, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +423,7 @@ func (b *Builtin) listDurable(ctx context.Context, limit int) ([]Entry, error) {
 		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
 		FROM memory
 		WHERE superseded_by IS NULL
+		  AND scope IN (?, ?)
 		  AND kind IN (?, ?, ?, ?)
 		  AND (expires_at IS NULL OR expires_at > ?)
 		ORDER BY
@@ -400,7 +434,7 @@ func (b *Builtin) listDurable(ctx context.Context, limit int) ([]Entry, error) {
 				ELSE 3
 			END,
 			updated_at DESC
-		LIMIT ?`, KindPreference, KindPerson, KindFact, KindInsight, now, limit)
+		LIMIT ?`, ScopeUser, b.readScope(), KindPreference, KindPerson, KindFact, KindInsight, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -418,10 +452,11 @@ func (b *Builtin) search(ctx context.Context, query string, limit int) ([]Entry,
 		JOIN memory m ON m.id = memory_fts.rowid
 		WHERE memory_fts MATCH ?
 		  AND m.superseded_by IS NULL
+		  AND m.scope IN (?, ?)
 		  AND NOT (m.kind = ? AND m.consolidated != 0)
 		  AND (m.expires_at IS NULL OR m.expires_at > ?)
 		ORDER BY rank, m.updated_at DESC
-		LIMIT ?`, fts, KindEpisode, now, limit)
+		LIMIT ?`, fts, ScopeUser, b.readScope(), KindEpisode, now, limit)
 	if err != nil {
 		return b.searchLike(ctx, query, now, limit)
 	}
@@ -435,11 +470,12 @@ func (b *Builtin) searchLike(ctx context.Context, query, now string, limit int) 
 		SELECT id, kind, subject, content, source, confidence, created_at, updated_at, expires_at, superseded_by
 		FROM memory
 		WHERE superseded_by IS NULL
+		  AND scope IN (?, ?)
 		  AND NOT (kind = ? AND consolidated != 0)
 		  AND (expires_at IS NULL OR expires_at > ?)
 		  AND (subject LIKE ? OR content LIKE ?)
 		ORDER BY updated_at DESC
-		LIMIT ?`, KindEpisode, now, like, like, limit)
+		LIMIT ?`, ScopeUser, b.readScope(), KindEpisode, now, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("memory: search: %w", err)
 	}

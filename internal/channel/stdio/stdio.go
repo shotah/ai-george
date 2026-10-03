@@ -13,10 +13,7 @@ import (
 	"github.com/shotah/george/internal/slash"
 )
 
-const (
-	sessionID = channel.AgentSession
-	userID    = "local"
-)
+const userID = "local"
 
 // Channel is an interactive line-oriented REPL on stdin/stdout.
 type Channel struct {
@@ -24,6 +21,9 @@ type Channel struct {
 	Out           io.Writer
 	Err           io.Writer
 	StreamReplies bool
+	// SessionID is the conversation every line belongs to (the repo id).
+	// Empty is channel.AgentSession.
+	SessionID string
 }
 
 // New returns a Channel bound to process stdio.
@@ -48,6 +48,10 @@ func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
 	errOut := c.Err
 	if errOut == nil {
 		errOut = os.Stderr
+	}
+	sessionID := c.SessionID
+	if sessionID == "" {
+		sessionID = channel.AgentSession
 	}
 
 	_, _ = fmt.Fprintln(errOut, slash.ReadyLine())

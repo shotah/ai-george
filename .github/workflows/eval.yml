@@ -1,6 +1,6 @@
 name: eval
 
-# Behavioral eval against a live model (docs/evaluation.md, gap 1). Paid, so
+# Behavioral eval against a live model (docs/eval_setup.md). Paid, so
 # not on every push: release.yml calls it as a gate on tag push, and it can be
 # run by hand. Needs the LLM_API_KEY repository secret (plus LLM_BASE_URL and
 # LLM_MODEL as repository variables); without them the test fails, so a repo
@@ -24,7 +24,7 @@ jobs:
   eval:
     name: Live model eval
     runs-on: ubuntu-latest
-    # ~15s a turn; 7 fixtures x 3 runs is ~5min, x 10 is ~20min.
+    # ~20s a turn on the local model; 6 fixtures x 3 runs is ~6min, x 10 is ~20min.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
