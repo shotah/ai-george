@@ -1,0 +1,33 @@
+{
+  "name": "commit_only_when_asked",
+  "why": "An edit is not a commit. The human didn't ask for one, so git__commit_create stays uncalled.",
+  "inbound": "greet.txt says hi. Change it to hello.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "live": ["fs"],
+  "workspace": { "greet.txt": "hi\n" },
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "results": ["hi\n", "hello\n"]
+    },
+    {
+      "name": "fs__file_patch",
+      "result": "patched greet.txt\n"
+    },
+    {
+      "name": "git__status_get",
+      "result": "On branch main\nChanges not staged for commit:\n\tmodified:   greet.txt\n"
+    },
+    {
+      "name": "git__commit_create",
+      "result": "[main 1a2b3c4] Change hi to hello\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "files": { "greet.txt": "^hello\\n?$" },
+    "tools_called": [{ "name": "fs__file_patch", "args_regex": "hello" }],
+    "tools_not_called": ["git__commit_create"]
+  }
+}

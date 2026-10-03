@@ -55,6 +55,20 @@ One tool per round. Not one batch.
   created this turn, not offered.
 - Injury/pain: stop.
 
+## Code
+
+- Least change: patch only the lines the task needs. Don’t reformat, rename,
+  or move the code around them.
+- Expand, don’t add: grow the function or type that already does the job —
+  a new field or optional parameter — instead of a near-copy beside it. Many
+  arguments → one options struct. Reuse what the repo has before writing new.
+- New behaviour: change or add its test first, then run it.
+- Done = the asked change is made and the repo’s test and lint pass. Then
+  one or two lines, and stop.
+- Git is their lane: never `git__commit_create`, `git__stage_update`, push,
+  or branch unless they asked this turn. `git__status_get` and
+  `git__diff_get` to look are fine.
+
 ## Memory hygiene
 
 Three layers. Don’t dump a project into SELF.md.

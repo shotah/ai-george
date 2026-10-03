@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shotah/george/internal/agent"
 	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/provider"
 )
@@ -67,10 +68,14 @@ func TestEval_Live(t *testing.T) {
 		evalPersonaPath = *evalPersonaFlag
 	}
 	evalLiveTools = evalLiveCatalog
+	evalLiveHost = func(t *testing.T, root string, servers []string) agent.Tools {
+		return startCodingHost(t, codingManifest(root, slices.Contains(servers, "shell")))
+	}
 	t.Logf("model %s at %s; reasoning_effort %q; %d run(s) per fixture; persona %s", model, baseURL, effort, *evalN, evalPersonaPath)
 
 	assertCodingCatalog(t, evalLiveCatalog(t))
 	assertCodingHostFailSoft(t)
+	assertBadDiffFailsRun(t)
 	if t.Failed() {
 		t.FailNow()
 	}
@@ -114,7 +119,8 @@ func TestEval_Live(t *testing.T) {
 // testdata/eval/mcp.toml, boots them, and returns their published tool
 // defs. Once per process; the first tools_from fixture pays for it. The
 // binaries are closed as soon as tools/list is in hand — the defs are
-// data, and no fixture ever calls the real thing.
+// data. A fixture's live servers are booted again per run by evalLiveHost,
+// rooted at that run's workspace.
 var (
 	liveCatalogOnce sync.Once
 	liveCatalogDefs []provider.ToolDef
@@ -293,6 +299,31 @@ func assertOmitShell(t *testing.T) {
 	if slices.Contains(names, "shell__command_run") {
 		t.Errorf("omit shell: shell__command_run still registered")
 	}
+}
+
+// assertBadDiffFailsRun scripts parallel_patches against the real fs: a
+// malformed diff and a reply that claims success must still fail the run,
+// because the files expectation reads what landed.
+func assertBadDiffFailsRun(t *testing.T) {
+	t.Helper()
+	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "30_parallel_patches.json"))
+	bad := "@@ nonsense @@\n-func Hello(\n+func Greet(\n"
+	sc := &scriptCompleter{res: []*provider.Result{
+		{ToolCalls: []provider.ToolCall{
+			toolCall("c1", "fs__file_patch", map[string]any{"path": "a.go", "diff": bad}),
+			toolCall("c2", "fs__file_patch", map[string]any{"path": "a_test.go", "diff": bad}),
+		}},
+		{Content: "Renamed Hello to Greet in both files."},
+	}}
+	out := runEvalFixture(context.Background(), t, sc, fx)
+	for _, c := range out.Calls {
+		t.Logf("bad diff: %s → %q", c.Name, c.Result)
+	}
+	fails := checkEval(context.Background(), out, evalExpect{Files: fx.Expect.Files})
+	if len(fails) == 0 {
+		t.Errorf("a malformed diff passed the files check")
+	}
+	t.Logf("bad diff fails the run: %s", strings.Join(fails, "; "))
 }
 
 func codingManifest(root string, withShell bool) string {

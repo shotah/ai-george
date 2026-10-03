@@ -4,6 +4,8 @@
   "inbound": "greet.txt says hi. Change that line to hello, then run wc -l greet.txt, then show git status.",
   "force": ["fs", "shell", "git"],
   "tools_from": ["fs", "shell", "git"],
+  "live": ["fs", "shell"],
+  "workspace": { "greet.txt": "hi\n" },
   "tools": [
     {
       "name": "fs__file_get",
@@ -24,13 +26,14 @@
   ],
   "expect": {
     "round_budget": 5,
+    "files": { "greet.txt": "^hello\\n?$" },
     "tools_called": [
       { "name": "fs__file_get", "args_regex": "greet\\.txt" },
       { "name": "fs__file_patch", "args_regex": "hello" },
       { "name": "shell__command_run", "args_regex": "wc.*greet\\.txt" },
       { "name": "git__status_get" }
     ],
-    "tools_not_called": ["self_note"],
+    "tools_not_called": ["git__commit_create", "git__stage_update"],
     "order": ["fs__file_get", "fs__file_patch", "shell__command_run", "git__status_get"],
     "reply_regex": "(?i)hello"
   }

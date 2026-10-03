@@ -47,7 +47,7 @@ type Config struct {
 	MCPManifest string `env:"MCP_MANIFEST"`
 
 	HistoryMaxMessages int `env:"HISTORY_MAX_MESSAGES" envDefault:"200"`
-	HistoryMaxTokens   int `env:"HISTORY_MAX_TOKENS" envDefault:"32000"` // estimated (chars/4); older turns fold into Facts/Voice
+	HistoryMaxTokens   int `env:"HISTORY_MAX_TOKENS" envDefault:"32000"` // estimated (chars/4); older turns are dropped
 	// HistoryStripFillers drops a small function-word list from older user
 	// history at prompt time. Last 40 messages stay verbatim; assistant turns
 	// are never stripped. SQLite stays verbatim.

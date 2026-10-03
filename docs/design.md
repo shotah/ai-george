@@ -234,7 +234,7 @@ record.
 | Mechanism | Behavior |
 | --- | --- |
 | History caps | Drop oldest past `HISTORY_MAX_MESSAGES` / `HISTORY_MAX_TOKENS` (chars/4 estimate). Filler strip is prompt-only, on user lines older than the last 40. SQLite stays verbatim. |
-| Rolling summary | Trimmed turns fold into `session.summary` (`Facts:` + `Voice:`) via one completion on the same model. That completion is still in the loop; dropping it is open ([todo.md](todo.md#8-work-list), *The summarizer decision*). |
+| Trimmed turns | Gone. No completion folds them into `session.summary`. A summary already in an older `george.db` is still read until `/reset`. |
 | Tool truncate | Each tool result capped at `TOOL_RESULT_MAX_CHARS` |
 | Tool collapse | Payloads older than the last 2 tool rounds become one-line markers; matching tool-call args are stubbed to `{}`. A round is one model-emitted batch. Session history stores the reply text, not tool payloads. |
 | Iteration cap | `TOOL_MAX_ITERATIONS` rounds with tools, then one landing call |
@@ -384,7 +384,7 @@ Dev: `make build|test|lint|run|ci|check`.
 9. **No listen port and no heartbeat.** Nothing is left running to health-check.
 10. **No sandbox.** `shell__command_run` runs as you, in `--root`. Git is the undo.
 11. **Fail-soft MCP boot.** One missing binary does not exit the process. A bad manifest does.
-12. **The session fold is one completion.** It is still in the code. Whether it stays is *The summarizer decision* in [todo.md](todo.md#8-work-list).
+12. **No session fold.** History trim spends no completion; trimmed turns are dropped.
 
 **Rejected:** pairing codes; embeddings on the hot path; a tool-shim model; stuffing the MCP catalog into `PERSONA.md`; cron, watches, and a planner; a container as the security boundary.
 

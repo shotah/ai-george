@@ -8,7 +8,9 @@ The short tag `qwen3-coder:30b` and the family tag `qwen3-coder:latest`
 name a moving target; this id names the size and the quant.
 
 The eval replays each fixture against that model with the shipped persona
-seed. No MCP servers, no Telegram, no Google — every tool is canned.
+seed. Tools are canned, except a fixture's `live` servers (`fs`, `shell`):
+those are the real binaries rooted at a temp dir seeded from the fixture's
+`workspace`, and `expect.files` checks what the patch left on disk.
 `make integration-test` sources `.env` and the harness reads:
 
 | Value | Local | Harness |
@@ -120,17 +122,23 @@ Wire those three only when the runner can reach the endpoint you name:
   - Name `LLM_BASE_URL`, value: the endpoint.
   - Name `LLM_MODEL`, value: the model id.
 
-Or with the `gh` CLI from the repo:
+The hosted gate is OpenRouter, serving the same 30B-A3B model. With the `gh`
+CLI from the repo (the key is from openrouter.ai → Keys):
 
 ```sh
 gh secret set LLM_API_KEY
-gh variable set LLM_BASE_URL --body 'http://127.0.0.1:11434/v1'
-gh variable set LLM_MODEL --body 'qwen3-coder:30b-a3b-q4_K_M'
+gh variable set LLM_BASE_URL --body 'https://openrouter.ai/api/v1'
+gh variable set LLM_MODEL --body 'qwen/qwen3-coder-30b-a3b-instruct'
 ```
 
-`127.0.0.1` in that variable is the runner's loopback, so it only grades
-this model when the job runs on a machine that already has Ollama and the
-pulled weights. Two workflows already read the three values:
+That is the same weights at a provider's quantization and chat template, not
+Ollama's `q4_K_M` build and `qwen3-coder` renderer, so a CI green is not a
+reading on this machine. At $0.07/M prompt tokens a default run (3 runs of
+each fixture, about 24k prompt tokens a turn) costs a few cents.
+
+`http://127.0.0.1:11434/v1` in that variable is the runner's loopback, so
+the local build is graded only on a self-hosted runner that already has
+Ollama and the pulled weights. Two workflows already read the three values:
 
 - **`eval.yml`** — *Actions → eval → Run workflow*. Inputs: `runs` (default
   3) and `only` (a fixture name, blank = all). By hand:

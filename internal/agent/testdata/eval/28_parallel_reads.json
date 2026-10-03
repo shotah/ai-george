@@ -24,7 +24,7 @@
         { "name": "fs__file_get", "args_regex": "\\bc\\.go" }
       ]
     ],
-    "tools_not_called": ["fs__file_patch", "self_note"],
+    "tools_not_called": ["fs__file_patch", "git__commit_create", "git__stage_update"],
     "reply_regex": "(?s)Hello.*Bye.*Version"
   }
 }

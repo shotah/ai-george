@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,29 +31,6 @@ type Store struct {
 	db           *sql.DB
 	maxMessages  int
 	maxEstTokens int
-	summarizer   Summarizer // optional; folds trimmed turns into session.summary
-	foldHook     FoldHook   // optional; after a successful fold (trim already committed)
-}
-
-// FoldHook sees the prior and next session summaries after a successful trim
-// fold. Used to graduate new Voice: material into SELF.md. Must not fail the
-// trim — the hook logs its own errors.
-type FoldHook func(prior, next string)
-
-// WithSummarizer enables rolling summary when history is trimmed.
-func (s *Store) WithSummarizer(sum Summarizer) *Store {
-	if s != nil {
-		s.summarizer = sum
-	}
-	return s
-}
-
-// WithFoldHook runs after a successful fold. Call after WithSummarizer.
-func (s *Store) WithFoldHook(h FoldHook) *Store {
-	if s != nil {
-		s.foldHook = h
-	}
-	return s
 }
 
 // Open opens (or creates) george.db under dataDir and runs migrations.
@@ -187,44 +163,16 @@ func (s *Store) Append(ctx context.Context, sessionID string, msgs ...Message) e
 		}
 	}
 
-	dropped, dropIDs, err := s.planTrimTx(ctx, tx, sessionID)
+	dropIDs, err := s.planTrimTx(ctx, tx, sessionID)
 	if err != nil {
 		return err
 	}
-
-	var foldedPrior, foldedNext string
-	if len(dropIDs) > 0 {
-		if s.summarizer != nil {
-			var prior string
-			err := tx.QueryRowContext(ctx, `SELECT summary FROM session WHERE id = ?`, sessionID).Scan(&prior)
-			if err != nil && err != sql.ErrNoRows {
-				return fmt.Errorf("session: summary: %w", err)
-			}
-			next, err := s.summarizer.Fold(ctx, prior, dropped)
-			if err != nil {
-				// Keep history intact when fold fails — do not delete without a summary.
-				slog.Warn("session summary fold failed; skipping trim", "session_id", sessionID, "err", err)
-			} else {
-				if err := s.deleteMessageIDs(ctx, tx, dropIDs); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `
-					UPDATE session SET summary = ?, updated_at = ? WHERE id = ?`,
-					next, now, sessionID); err != nil {
-					return fmt.Errorf("session: set summary: %w", err)
-				}
-				foldedPrior, foldedNext = prior, next
-			}
-		} else if err := s.deleteMessageIDs(ctx, tx, dropIDs); err != nil {
-			return err
-		}
+	if err := s.deleteMessageIDs(ctx, tx, dropIDs); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("session: commit: %w", err)
-	}
-	if s.foldHook != nil && foldedNext != "" {
-		s.foldHook(foldedPrior, foldedNext)
 	}
 	return nil
 }
@@ -247,10 +195,8 @@ func (s *Store) Stats(ctx context.Context, sessionID string) (messages int, estT
 	return len(msgs), EstTokens(msgs), nil
 }
 
-// planTrimTx returns oldest messages that would be removed to satisfy bounds
-// without deleting them yet (so fold can fail safely).
-func (s *Store) planTrimTx(ctx context.Context, tx *sql.Tx, sessionID string) ([]Message, []int64, error) {
-	var dropped []Message
+// planTrimTx returns the ids of the oldest messages to remove to satisfy bounds.
+func (s *Store) planTrimTx(ctx context.Context, tx *sql.Tx, sessionID string) ([]int64, error) {
 	var ids []int64
 	var skipChars int
 	for {
@@ -260,33 +206,32 @@ func (s *Store) planTrimTx(ctx context.Context, tx *sql.Tx, sessionID string) ([
 			SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
 			FROM session_message WHERE session_id = ?`, sessionID).Scan(&count, &chars)
 		if err != nil {
-			return nil, nil, fmt.Errorf("session: trim stats: %w", err)
+			return nil, fmt.Errorf("session: trim stats: %w", err)
 		}
 		remain := count - len(ids)
 		est := (chars - skipChars + 3) / 4
 		if remain <= s.maxMessages && est <= s.maxEstTokens {
-			return dropped, ids, nil
+			return ids, nil
 		}
 		if remain <= 2 {
-			return dropped, ids, nil
+			return ids, nil
 		}
 
 		var id int64
-		var m Message
+		var content string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, role, content FROM session_message
+			SELECT id, content FROM session_message
 			WHERE session_id = ?
 			ORDER BY id ASC
-			LIMIT 1 OFFSET ?`, sessionID, len(ids)).Scan(&id, &m.Role, &m.Content)
+			LIMIT 1 OFFSET ?`, sessionID, len(ids)).Scan(&id, &content)
 		if err == sql.ErrNoRows {
-			return dropped, ids, nil
+			return ids, nil
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("session: trim peek: %w", err)
+			return nil, fmt.Errorf("session: trim peek: %w", err)
 		}
 		ids = append(ids, id)
-		skipChars += len(m.Content)
-		dropped = append(dropped, m)
+		skipChars += len(content)
 	}
 }
 

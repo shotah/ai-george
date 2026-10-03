@@ -87,7 +87,6 @@ func run() int {
 		logger.Error("session store open failed", "err", err)
 		return 1
 	}
-	sessions.WithSummarizer(&session.LLMSummarizer{Completer: completer})
 	defer func() {
 		if err := sessions.Close(); err != nil {
 			logger.Error("session store close failed", "err", err)
@@ -184,17 +183,6 @@ func run() int {
 			} else {
 				personaText = text
 			}
-			store := selfStore
-			sessions.WithFoldHook(func(prior, next string) {
-				ok, err := selfnote.GraduateVoice(store, prior, next)
-				if err != nil {
-					logger.Warn("self-note on trim failed", "err", err)
-					return
-				}
-				if ok {
-					logger.Info("self-note on trim", "note_graduated", true)
-				}
-			})
 		}
 	}
 

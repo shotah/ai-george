@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shotah/george/internal/agent"
 	"github.com/shotah/george/internal/mcp"
 	"github.com/shotah/george/internal/provider"
 )
@@ -105,6 +107,11 @@ func compileEvalRegexes(t *testing.T, name string, e evalExpect) {
 			t.Errorf("%s: bad args_regex %q: %v", name, c.ArgsRegex, err)
 		}
 	}
+	for path, re := range e.Files {
+		if _, err := regexp.Compile(re); err != nil {
+			t.Errorf("%s: files %s: bad regex %q: %v", name, path, re, err)
+		}
+	}
 	for _, alt := range e.AnyOf {
 		compileEvalRegexes(t, name, alt)
 	}
@@ -157,6 +164,14 @@ func TestEvalFixtures_WellFormed(t *testing.T) {
 					t.Errorf("%s: %s comes from the live catalog; drop its description/params", fx.Name, tl.Name)
 				}
 			}
+		}
+		for _, server := range fx.Live {
+			if !slices.Contains(fx.ToolsFrom, server) {
+				t.Errorf("%s: live %q needs to be in tools_from for its real defs", fx.Name, server)
+			}
+		}
+		if len(fx.Expect.Files) > 0 && len(fx.Live) == 0 {
+			t.Errorf("%s: files expectations need a live server to change the workspace", fx.Name)
 		}
 		compileEvalRegexes(t, fx.Name, fx.Expect)
 	}
@@ -234,6 +249,20 @@ func TestCheckEval_MaxCalls(t *testing.T) {
 	}
 }
 
+// max_tool_calls counts every call, whatever the tool.
+func TestCheckEval_MaxToolCalls(t *testing.T) {
+	one := 1
+	out := evalOutcome{Calls: []evalCall{{Name: "fs__file_get", Round: 1}}}
+	if fails := checkEval(context.Background(), out, evalExpect{MaxToolCalls: &one}); len(fails) != 0 {
+		t.Fatalf("one call within max 1: %v", fails)
+	}
+	out.Calls = append(out.Calls, evalCall{Name: "git__status_get", Round: 2})
+	fails := checkEval(context.Background(), out, evalExpect{MaxToolCalls: &one})
+	if len(fails) != 1 || fails[0] != "2 tool calls, max 1" {
+		t.Fatalf("fails=%v", fails)
+	}
+}
+
 // A tools_from fixture outside the integration tag is a hard error, never a
 // silently hand-written schema.
 func TestEvalHarness_ToolsFromNeedsLiveCatalog(t *testing.T) {
@@ -245,12 +274,77 @@ func TestEvalHarness_ToolsFromNeedsLiveCatalog(t *testing.T) {
 	}
 }
 
-// editFixture is edit_then_check with hand-written defs, so it runs without
-// the live catalog.
+// writeTools stands in for the real fs: a call writes args.body to args.path
+// under root, so the files expectation reads what the "patch" did.
+type writeTools struct{ root string }
+
+func (w writeTools) Tools() []provider.ToolDef { return nil }
+func (w writeTools) ToolCount() int            { return 0 }
+func (w writeTools) Call(_ context.Context, _ string, args json.RawMessage) (string, error) {
+	var a struct{ Path, Body string }
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", err
+	}
+	return "wrote " + a.Path, os.WriteFile(filepath.Join(w.root, a.Path), []byte(a.Body), 0o644)
+}
+
+// Live servers go to the host rooted at the seeded workspace; the rest stay
+// canned; files reads the workspace after the turn.
+func TestEvalHarness_LiveWorkspace(t *testing.T) {
+	prev := evalLiveHost
+	t.Cleanup(func() { evalLiveHost = prev })
+	var gotRoot string
+	evalLiveHost = func(_ *testing.T, root string, servers []string) agent.Tools {
+		if !slices.Equal(servers, []string{"fs"}) {
+			t.Errorf("servers = %v", servers)
+		}
+		gotRoot = root
+		return writeTools{root: root}
+	}
+	fx := evalFixture{
+		Name:      "live_workspace",
+		Inbound:   "rename Hello to Greet",
+		Force:     []string{"fs", "shell"},
+		Workspace: map[string]string{"a.go": "func Hello() {}\n"},
+		Live:      []string{"fs"},
+		Tools: []evalTool{
+			{Name: "fs__file_patch", Result: "canned, not used"},
+			{Name: "shell__command_run", Result: "exit 0\n"},
+		},
+	}
+	sc := &scriptCompleter{res: []*provider.Result{
+		{ToolCalls: []provider.ToolCall{
+			toolCall("c1", "fs__file_patch", map[string]any{"path": "a.go", "body": "func Greet() {}\n"}),
+			toolCall("c2", "shell__command_run", map[string]any{"command": "go build"}),
+		}},
+		{Content: "Renamed to Greet."},
+	}}
+	out := runEvalFixture(context.Background(), t, sc, fx)
+	if gotRoot != out.Workspace {
+		t.Fatalf("live host root %q, workspace %q", gotRoot, out.Workspace)
+	}
+	results := map[string]string{}
+	for _, c := range out.Calls {
+		results[c.Name] = c.Result
+	}
+	if results["fs__file_patch"] != "wrote a.go" || results["shell__command_run"] != "exit 0\n" {
+		t.Fatalf("routing: %v", results)
+	}
+	if fails := checkEval(context.Background(), out, evalExpect{Files: map[string]string{"a.go": `func Greet\(`}}); len(fails) != 0 {
+		t.Fatalf("landed patch should pass: %v", fails)
+	}
+	fails := checkEval(context.Background(), out, evalExpect{Files: map[string]string{"a.go": `Hello`, "b.go": `.`}})
+	if len(fails) != 2 || !strings.Contains(fails[0], "file a.go should match /Hello/") || !strings.Contains(fails[1], "file b.go:") {
+		t.Fatalf("fails=%v", fails)
+	}
+}
+
+// editFixture is edit_then_check with hand-written defs and canned results,
+// so it runs without the live catalog or the real fs.
 func editFixture(t *testing.T) evalFixture {
 	t.Helper()
 	fx := loadEvalFixture(t, filepath.Join(evalFixtureDir, "27_edit_then_check.json"))
-	fx.ToolsFrom = nil
+	fx.ToolsFrom, fx.Live, fx.Expect.Files = nil, nil, nil
 	return fx
 }
 

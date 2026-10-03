@@ -4,26 +4,17 @@
   "inbound": "Rename Hello to Greet in a.go and a_test.go.",
   "force": ["fs", "shell", "git"],
   "tools_from": ["fs", "shell", "git"],
-  "tools": [
-    {
-      "name": "fs__file_get",
-      "result": "error: no such file\n",
-      "by_args": [
-        { "args_regex": "a_test\\.go", "result": "package greet\n\nimport \"testing\"\n\nfunc TestHello(t *testing.T) {\n\tif Hello(\"bob\") != \"hello bob\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n" },
-        { "args_regex": "\\ba\\.go", "result": "package greet\n\nfunc Hello(name string) string { return \"hello \" + name }\n" }
-      ]
-    },
-    {
-      "name": "fs__file_patch",
-      "result": "error: no such file\n",
-      "by_args": [
-        { "args_regex": "a_test\\.go", "result": "patched: a_test.go\n" },
-        { "args_regex": "\\ba\\.go", "result": "patched: a.go\n" }
-      ]
-    }
-  ],
+  "live": ["fs"],
+  "workspace": {
+    "a.go": "package greet\n\nfunc Hello(name string) string { return \"hello \" + name }\n",
+    "a_test.go": "package greet\n\nimport \"testing\"\n\nfunc TestHello(t *testing.T) {\n\tif Hello(\"bob\") != \"hello bob\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n"
+  },
   "expect": {
     "round_budget": 3,
+    "files": {
+      "a.go": "func Greet\\(name string\\) string",
+      "a_test.go": "Greet\\(\"bob\"\\)"
+    },
     "same_round": [
       [
         { "name": "fs__file_get", "args_regex": "\"path\":\"(\\./)?a\\.go\"" },
@@ -35,7 +26,7 @@
       ]
     ],
     "order": ["fs__file_get", "fs__file_patch"],
-    "tools_not_called": ["git__commit_create", "self_note"],
+    "tools_not_called": ["git__commit_create", "git__stage_update"],
     "reply_regex": "Greet"
   }
 }

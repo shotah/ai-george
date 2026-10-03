@@ -1,0 +1,19 @@
+{
+  "name": "stop_when_done",
+  "why": "One read answers the question. After it, the reply is the next step, not another tool call.",
+  "inbound": "What does greet.txt say?",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "result": "hi\n"
+    }
+  ],
+  "expect": {
+    "round_budget": 2,
+    "tools_called": [{ "name": "fs__file_get", "args_regex": "greet\\.txt" }],
+    "max_tool_calls": 1,
+    "reply_regex": "(?i)\\bhi\\b"
+  }
+}

@@ -4,7 +4,8 @@ package agent_test
 //
 // A fixture is one turn against the shipped persona seed with a real session,
 // memory, mcp_enable, and self-note store — the same composition as
-// cmd/george/run.go — and canned MCP tools. Only the Completer varies: the
+// cmd/george/run.go — and canned MCP tools, or the real fs/shell binaries on
+// a seeded workspace for a fixture's live servers. Only the Completer varies: the
 // live eval (eval_integration_test.go, build tag `integration`) plugs in the
 // real provider; the plumbing test plugs in a scripted fake so the harness
 // itself is covered by `go test ./...`.
@@ -17,9 +18,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +72,13 @@ type evalFixture struct {
 	// only name + canned result, and a name the live catalog lacks fails
 	// before any model call. Needs the integration tag (network).
 	ToolsFrom []string `json:"tools_from,omitempty"`
+	// Workspace seeds a fresh directory for the turn: path → file body.
+	Workspace map[string]string `json:"workspace,omitempty"`
+	// Live names tools_from servers whose calls go to the real binary rooted
+	// at Workspace instead of the canned result, so a re-read sees the
+	// patch and a bad diff stays bad. Canned results for those servers are
+	// the stand-in only where no live host is wired (plain `go test`).
+	Live []string `json:"live,omitempty"`
 	// Force lists MCP prefixes published without mcp_enable (like MCP_ENABLE_FORCE).
 	Force []string `json:"force,omitempty"`
 	// Script is the first completions of the turn, canned instead of the
@@ -136,12 +146,18 @@ type evalExpect struct {
 	ReplyRegex   string             `json:"reply_regex,omitempty"`
 	ReplyNot     string             `json:"reply_not_regex,omitempty"`
 	MaxQuestions *int               `json:"max_questions,omitempty"`
+	// MaxToolCalls caps every call in the turn, builtins included: past the
+	// answer, any further call fails the run.
+	MaxToolCalls *int `json:"max_tool_calls,omitempty"`
 	// RoundBudget is the completer rounds the rule needs (tool rounds + the
 	// reply). Going over is reported, never failed: the gate is on missing
 	// work, and a model that does something extra and useful is not wrong.
 	RoundBudget *int               `json:"round_budget,omitempty"`
 	Memory      []evalMemoryExpect `json:"memory,omitempty"`
-	AnyOf       []evalExpect       `json:"any_of,omitempty"`
+	// Files maps a workspace path to a regex its body must match after the
+	// turn: the patch landed, whatever the model said about it.
+	Files map[string]string `json:"files,omitempty"`
+	AnyOf []evalExpect      `json:"any_of,omitempty"`
 }
 
 type evalCallExpect struct {
@@ -183,6 +199,8 @@ type evalOutcome struct {
 	// {{memory:0}} in an expect regex.
 	MemoryIDs []int64
 	mem       *memory.Builtin
+	// Workspace is the seeded directory; Files expectations read it.
+	Workspace string
 }
 
 func loadEvalFixtures(t *testing.T, dir string) []evalFixture {
@@ -225,6 +243,41 @@ func loadEvalFixture(t *testing.T, path string) evalFixture {
 // `go test`, where a tools_from fixture is a hard error rather than a
 // silently faked schema.
 var evalLiveTools func(t *testing.T) []provider.ToolDef
+
+// evalLiveHost boots the named servers rooted at a fixture's workspace. Set
+// by the integration test; nil in plain `go test`, where Live servers fall
+// back to their canned results.
+var evalLiveHost func(t *testing.T, root string, servers []string) agent.Tools
+
+// liveRouted sends calls for Live server prefixes to the real host and every
+// other call to the canned tools. The defs stay the canned (live-catalog)
+// set, so what the model sees does not change with the routing.
+type liveRouted struct {
+	*cannedTools
+	live    agent.Tools
+	servers []string
+}
+
+func (r *liveRouted) Call(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	if prefix, _, ok := strings.Cut(name, "__"); ok && slices.Contains(r.servers, prefix) {
+		return r.live.Call(ctx, name, args)
+	}
+	return r.cannedTools.Call(ctx, name, args)
+}
+
+// seedWorkspace writes a fixture's files under dir.
+func seedWorkspace(dir string, files map[string]string) error {
+	for path, body := range files {
+		full := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // mergeLiveTools builds the canned set for a tools_from fixture: every tool
 // the live servers publish, with the fixture's canned result where it gave
@@ -453,10 +506,14 @@ func runEvalFixture(ctx context.Context, t *testing.T, completer provider.Comple
 	root := t.TempDir()
 	personaDir := filepath.Join(root, "persona")
 	dataDir := filepath.Join(root, "data")
-	for _, d := range []string{personaDir, dataDir} {
+	workDir := filepath.Join(root, "work")
+	for _, d := range []string{personaDir, dataDir, workDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := seedWorkspace(workDir, fx.Workspace); err != nil {
+		t.Fatalf("%s: workspace: %v", fx.Name, err)
 	}
 	if fx.Self != "" {
 		if err := os.WriteFile(filepath.Join(personaDir, selfnote.FileName), []byte(fx.Self+"\n"), 0o644); err != nil {
@@ -526,7 +583,11 @@ func runEvalFixture(ctx context.Context, t *testing.T, completer provider.Comple
 
 	// Same stack as cmd/george/run.go, canned MCP host at the bottom,
 	// recorder on top.
-	var tools agent.Tools = newCannedTools(canned)
+	cannedSet := newCannedTools(canned)
+	var tools agent.Tools = cannedSet
+	if len(fx.Live) > 0 && evalLiveHost != nil {
+		tools = &liveRouted{cannedTools: cannedSet, live: evalLiveHost(t, workDir, fx.Live), servers: fx.Live}
+	}
 	tools = memory.Composite{Memory: memory.Tools{Backend: mem}, Other: tools}
 	tools = selfnote.Composite{Self: selfnote.Tools{Store: self}, Other: tools}
 	base := tools
@@ -565,6 +626,7 @@ func runEvalFixture(ctx context.Context, t *testing.T, completer provider.Comple
 		CompletionTokens: counter.usage.CompletionTokens,
 		MemoryIDs:        memoryIDs,
 		mem:              mem,
+		Workspace:        workDir,
 	}
 }
 
@@ -623,6 +685,9 @@ func checkEval(ctx context.Context, out evalOutcome, want evalExpect) []string {
 			fails = append(fails, "unexpected tool "+name)
 		}
 	}
+	if want.MaxToolCalls != nil && len(out.Calls) > *want.MaxToolCalls {
+		fails = append(fails, fmt.Sprintf("%d tool calls, max %d", len(out.Calls), *want.MaxToolCalls))
+	}
 	if len(want.Order) > 1 {
 		last := -1
 		for _, name := range want.Order {
@@ -657,6 +722,16 @@ func checkEval(ctx context.Context, out evalOutcome, want evalExpect) []string {
 	for _, m := range want.Memory {
 		if !memoryRowExists(ctx, out.mem, m) {
 			fails = append(fails, "expected memory row "+m.Kind+" "+m.Subject)
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(want.Files)) {
+		body, err := os.ReadFile(filepath.Join(out.Workspace, filepath.FromSlash(path)))
+		if err != nil {
+			fails = append(fails, "file "+path+": "+err.Error())
+			continue
+		}
+		if re := want.Files[path]; !regexp.MustCompile(re).Match(body) {
+			fails = append(fails, fmt.Sprintf("file %s should match /%s/, is %q", path, re, body))
 		}
 	}
 	if len(want.AnyOf) > 0 {

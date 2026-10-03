@@ -143,7 +143,6 @@ sequenceDiagram
   Run->>Cfg: env file, then process env (fail-fast)
   Run->>Run: GEORGE_ROOT + bin dir on PATH
   Run->>Ses: Open george.db + migrations
-  Run->>Ses: WithSummarizer(LLM)
   Run->>MCP: Start(manifest) — each server fail-soft
   alt MEMORY_ENABLED
     Run->>Mem: OpenDB or MCPAdapter
@@ -337,7 +336,6 @@ line when a turn has produced no model output yet.
 These are in this process today. The plan moves them; the diagrams above
 describe the code, not that later cut.
 
-- History trim still spends one completion (`session.LLMSummarizer`) to fold dropped turns into `Facts:` / `Voice:`.
 - Memory rows have no repo-versus-you scope column. Hydration is one table.
 - Stdio is a line scanner (a line may be up to 1MB). A paste is not yet one bracketed message, and the first Ctrl-C cancels the process.
 - `[harness]` is the clock. A workspace line (root and branch) is not stamped.

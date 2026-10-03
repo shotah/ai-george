@@ -362,6 +362,37 @@ func TestAgent_Handle_DynamicToolsPrompt(t *testing.T) {
 	}
 }
 
+func TestAgent_Handle_TrimSpendsNoCompletion(t *testing.T) {
+	ctx := context.Background()
+	sess, err := session.Open(t.TempDir(), 4, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	fc := &fakeCompleter{fn: func(provider.Request) (*provider.Result, error) {
+		return &provider.Result{Content: "ok"}, nil
+	}}
+	a, err := agent.New(agent.Options{Persona: "p", Completer: fc, Sessions: sess, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const turns = 8
+	for i := 0; i < turns; i++ {
+		if _, err := a.Handle(ctx, channel.Message{SessionID: "s", Text: fmt.Sprintf("turn %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fc.calls != turns {
+		t.Fatalf("completions=%d want %d (one per turn, none for the trim)", fc.calls, turns)
+	}
+	if n, _, err := sess.Stats(ctx, "s"); err != nil || n != 4 {
+		t.Fatalf("history=%d err=%v, want trimmed to 4", n, err)
+	}
+	if sum, err := sess.Summary(ctx, "s"); err != nil || sum != "" {
+		t.Fatalf("summary=%q err=%v, want empty", sum, err)
+	}
+}
+
 func TestAgent_Handle_MemoryHydration(t *testing.T) {
 	ctx := context.Background()
 	mem, err := memory.Open(t.TempDir())

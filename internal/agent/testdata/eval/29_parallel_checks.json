@@ -22,7 +22,7 @@
         { "name": "shell__command_run", "args_regex": "go test" }
       ]
     ],
-    "tools_not_called": ["fs__file_patch", "git__commit_create", "self_note"],
+    "tools_not_called": ["fs__file_patch", "git__commit_create", "git__stage_update"],
     "reply_regex": "(?i)TestHello|fail",
     "reply_not_regex": "(?i)\\b(both|all)\\b[^.]*\\bpass"
   }
