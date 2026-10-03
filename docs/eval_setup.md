@@ -2,10 +2,11 @@
 
 > Fixtures: `internal/agent/testdata/eval/`
 
-The live reading grades one local model: Qwen3-Coder-30B-A3B at Q4_K_M.
-The id is `qwen3-coder:30b-a3b-q4_K_M`, served by Ollama on this machine.
-The short tag `qwen3-coder:30b` and the family tag `qwen3-coder:latest`
-name a moving target; this id names the size and the quant.
+The live reading grades one local model: the Qwen3.6-35B-A3B coding build at
+Q4_K_M. The id is `qwen3.6:35b-a3b-coding`, served by Ollama on this machine.
+The family tag `qwen3.6:latest` names a moving target; this id names the size
+and the coding build. It replaced `qwen3-coder:30b-a3b-q4_K_M`, which never
+passed `parallel_patches` (0/5); this one passed it 3/3.
 
 The eval replays each fixture against that model with the shipped persona
 seed. Tools are canned, except a fixture's `live` servers (`fs`, `shell`):
@@ -26,11 +27,13 @@ those are the real binaries rooted at a temp dir seeded from the fixture's
 1. Ollama listening on this machine, then the weights:
 
    ```sh
-   ollama pull qwen3-coder:30b-a3b-q4_K_M
+   ollama pull qwen3.6:35b-a3b-coding
    ```
 
-   About 19GB. The tag is the Q4_K_M build of Qwen3-Coder-30B-A3B
-   (30.5B total, 3.3B active). The model advertises a 256k context.
+   About 22GB. The tag is the Q4_K_M coding build of Qwen3.6-35B-A3B
+   (35.5B total, 3B active), with Ollama's `qwen3.5` renderer and parser.
+   It thinks by default; `LLM_REASONING_EFFORT=none` turns that off, and
+   the gate runs with it off. The model advertises a 256k context.
    On a machine with a lot of shared memory Ollama will reserve that
    whole window (tens of GB of cache) and the first turn sits in
    warmup. Set `OLLAMA_CONTEXT_LENGTH=32768` on the Ollama service
@@ -45,7 +48,7 @@ those are the real binaries rooted at a temp dir seeded from the fixture's
    ```sh
    LLM_BASE_URL=http://127.0.0.1:11434/v1
    LLM_API_KEY=ollama
-   LLM_MODEL=qwen3-coder:30b-a3b-q4_K_M
+   LLM_MODEL=qwen3.6:35b-a3b-coding
    LLM_REASONING_EFFORT=none
    ```
 
@@ -122,19 +125,19 @@ Wire those three only when the runner can reach the endpoint you name:
   - Name `LLM_BASE_URL`, value: the endpoint.
   - Name `LLM_MODEL`, value: the model id.
 
-The hosted gate is OpenRouter, serving the same 30B-A3B model. With the `gh`
+The hosted gate is OpenRouter, serving Qwen3.6-35B-A3B. With the `gh`
 CLI from the repo (the key is from openrouter.ai → Keys):
 
 ```sh
 gh secret set LLM_API_KEY
 gh variable set LLM_BASE_URL --body 'https://openrouter.ai/api/v1'
-gh variable set LLM_MODEL --body 'qwen/qwen3-coder-30b-a3b-instruct'
+gh variable set LLM_MODEL --body 'qwen/qwen3.6-35b-a3b'
 ```
 
-That is the same weights at a provider's quantization and chat template, not
-Ollama's `q4_K_M` build and `qwen3-coder` renderer, so a CI green is not a
-reading on this machine. At $0.07/M prompt tokens a default run (3 runs of
-each fixture, about 24k prompt tokens a turn) costs a few cents.
+That is Qwen3.6-35B-A3B at a provider's quantization, chat template, and
+sampling, not Ollama's coding tag and `qwen3.5` renderer, so a CI green is not a
+reading on this machine. At about $0.15/M prompt tokens a default run (3 runs
+of each fixture, about 24k prompt tokens a turn) costs a few cents.
 
 `http://127.0.0.1:11434/v1` in that variable is the runner's loopback, so
 the local build is graded only on a self-hosted runner that already has

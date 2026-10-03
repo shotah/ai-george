@@ -4,7 +4,7 @@ This is the plan for turning the forked assistant into a local coding agent. [to
 
 ## The product
 
-The product is a CLI. You run `george` in a repo, it works in that tree, and it exits when you quit. It is not a daemon and not a container. It uses one local model, `qwen3-coder:30b-a3b-q4_K_M` from [eval_setup.md](eval_setup.md), and four MCP children rooted at the repo: `fs`, `git`, `shell`, and `github`. The human types a task, and the agent reads, patches, runs the check, and reports. Nothing happens unless the human starts it. There are no wakes and nothing runs on a clock.
+The product is a CLI. You run `george` in a repo, it works in that tree, and it exits when you quit. It is not a daemon and not a container. It uses one local model, `qwen3.6:35b-a3b-coding` from [eval_setup.md](eval_setup.md), and four MCP children rooted at the repo: `fs`, `git`, `shell`, and `github`. The human types a task, and the agent reads, patches, runs the check, and reports. Nothing happens unless the human starts it. There are no wakes and nothing runs on a clock.
 
 It remembers two things across runs: the human (taste, habits) and each repo (commands, conventions, goals). See [Memory](#memory-you-and-the-repo).
 
@@ -233,7 +233,7 @@ Every phase ends the same way: `make check` is green, the golden diff has been r
 - `rg -il 'telegram|discord|slack|pendant|planner|aims|cron_|watch_' internal cmd` finds nothing outside history notes.
 - `go.mod` has no chat SDKs.
 - The default `[harness]` block on a coding turn shows only the clock and the workspace.
-- Every coding fixture passes every run at `-eval.n=5` on `qwen3-coder:30b-a3b-q4_K_M`, and the log prints that id.
+- Every coding fixture passes every run at `-eval.n=5` on `qwen3.6:35b-a3b-coding`, and the log prints that id.
 - A long session on the pinned model stays under the 32k window, as measured by `/tokens`.
 - The repo has no `Dockerfile`, no `compose.yml`, and no `deploy/`. `cd any-repo && george` works with keys from `~/.config/george/env` only.
 - `sqlite3 ~/.local/share/george/george.db 'select scope, subject from memory'` shows `user` rows and per-repo rows side by side.

@@ -15,7 +15,7 @@
 You run it in a repo and type. It reads files, patches them, runs the
 check, and shows you `git status`. It talks to any OpenAI-compatible
 endpoint, and the eval grades it against a pinned local model
-(`qwen3-coder:30b-a3b-q4_K_M` on Ollama).
+(`qwen3.6:35b-a3b-coding` on Ollama).
 
 ```text
 static binary + persona + OpenAI-compat LLM + fs / git / shell / github MCP  →  edits in your repo
@@ -42,7 +42,7 @@ You need an OpenAI-compatible model on this machine (Ollama, llama.cpp,
 or an API you already have).
 
 ```bash
-ollama pull qwen3-coder:30b-a3b-q4_K_M
+ollama pull qwen3.6:35b-a3b-coding
 ```
 
 Two ways to get a binary: [download a release](https://github.com/shotah/ai-george/releases),
@@ -187,6 +187,7 @@ chain and parallel reads, checks, and patches. Setup:
 | Run the live behavior eval | **[docs/eval_setup.md](docs/eval_setup.md)** |
 | The coding MCP servers | **[docs/coding-mcp.md](docs/coding-mcp.md)** |
 | Why this tree, not goose | **[docs/fork-cli-agent.md](docs/fork-cli-agent.md)** |
+| A reading of this repo: pros, cons, whether to use it | **[docs/review.md](docs/review.md)** |
 
 ## License
 

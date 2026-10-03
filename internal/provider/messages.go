@@ -4,8 +4,8 @@ import "strings"
 
 // LLM_SYSTEM_FOLD modes: how RoleSystem blocks reach the OpenAI-compat body.
 const (
-	// FoldAuto folds (the same as FoldOne): Ollama's qwen3-coder renderer
-	// keeps only the first system message and drops the rest.
+	// FoldAuto folds (the same as FoldOne): some renderers (Ollama's
+	// qwen3-coder) keep only the first system message and drop the rest.
 	FoldAuto = "auto"
 	// FoldOne folds every system block into one leading system message,
 	// for chat templates that render system only at position 0.

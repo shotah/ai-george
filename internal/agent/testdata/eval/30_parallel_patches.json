@@ -1,16 +1,17 @@
 {
   "name": "parallel_patches",
-  "why": "Two files: read both in one batch, then patch both in one batch. Parallel inside a step, the chain between steps.",
+  "why": "Two files: read both in one batch, patch both in one batch, then run the test. Parallel inside a step, the chain between steps.",
   "inbound": "Rename Hello to Greet in a.go and a_test.go.",
   "force": ["fs", "shell", "git"],
   "tools_from": ["fs", "shell", "git"],
-  "live": ["fs"],
+  "live": ["fs", "shell"],
   "workspace": {
+    "go.mod": "module greet\n\ngo 1.22\n",
     "a.go": "package greet\n\nfunc Hello(name string) string { return \"hello \" + name }\n",
     "a_test.go": "package greet\n\nimport \"testing\"\n\nfunc TestHello(t *testing.T) {\n\tif Hello(\"bob\") != \"hello bob\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n"
   },
   "expect": {
-    "round_budget": 3,
+    "round_budget": 4,
     "files": {
       "a.go": "func Greet\\(name string\\) string",
       "a_test.go": "Greet\\(\"bob\"\\)"

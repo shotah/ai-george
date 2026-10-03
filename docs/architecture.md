@@ -94,7 +94,7 @@ internal/slash/      REPL command catalog
 One provider implementation is deliberate: Ollama, llama.cpp, and hosted
 APIs all speak OpenAI-compat. Model identity is `LLM_BASE_URL` + `LLM_MODEL` +
 `LLM_API_KEY`. The eval grades one local id,
-`qwen3-coder:30b-a3b-q4_K_M`.
+`qwen3.6:35b-a3b-coding`.
 
 ## Process model
 
@@ -301,8 +301,8 @@ readable; they still append when those subsystems are on.
 The agent layout has the trailing `[harness]` `role=system` block after the
 user. By default (`LLM_SYSTEM_FOLD=auto` or `one`) `provider.WireMessagesMode`
 folds every system block into one leading system message on the wire
-(standing blocks first, this-turn blocks last), because Ollama's
-`qwen3-coder` renderer drops every system message after the first. `many`
+(standing blocks first, this-turn blocks last), because some renderers
+(Ollama's `qwen3-coder`) drop every system message after the first. `many`
 posts the layout as-is. The folded HTTP body is pinned as
 `internal/agent/testdata/stdio/wire.txt`.
 

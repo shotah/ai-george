@@ -42,7 +42,7 @@ dashboard.
 ## Who it’s for
 
 Someone who wants `cd repo && george` against a local OpenAI-compatible
-model (the eval grades `qwen3-coder:30b-a3b-q4_K_M` on Ollama). The human
+model (the eval grades `qwen3.6:35b-a3b-coding` on Ollama). The human
 types a task. The agent reads, patches, runs the check, and reports.
 
 Anti-fit: a phone assistant, a web UI, a team workspace, inbound webhooks,
@@ -87,7 +87,9 @@ The graded socket is the local one; Gemini support was dropped.
 `LLM_SYSTEM_FOLD=auto` (the default) folds every system block into one leading
 system message. Ollama's `qwen3-coder` renderer keeps only the first system
 message and silently drops the rest, so the layout with system text after the
-user turn (`many`) hides the harness, budget, and loop notes from this model.
+user turn (`many`) hides the harness, budget, and loop notes from that model.
+The `qwen3.5` renderer behind `qwen3.6:35b-a3b-coding` does read a later
+system message; the gate runs folded on it anyway.
 
 ## Progress per invocation
 
@@ -127,7 +129,7 @@ directory.
 | --- | --- | --- |
 | `LLM_BASE_URL` | yes | `http://127.0.0.1:11434/v1` |
 | `LLM_API_KEY` | yes | any non-empty string for a local server that ignores it |
-| `LLM_MODEL` | yes | `qwen3-coder:30b-a3b-q4_K_M` |
+| `LLM_MODEL` | yes | `qwen3.6:35b-a3b-coding` |
 | `LLM_MAX_TOKENS` | no | `4096` (completion output cap, including tool-call args; `0` = provider default) |
 | `LLM_REASONING_EFFORT` | no | empty (Ollama/Qwen: `none` so max tokens are not eaten by hidden chain-of-thought) |
 | `LLM_SYSTEM_FOLD` | no | `auto` (same as `one`: every system block folded into one leading message). `many` posts the layout with `[harness]` after the user, for a server that renders every system message |

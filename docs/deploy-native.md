@@ -27,7 +27,7 @@ Logs are JSON on stderr of that process. Replies are stdout.
 The eval grades one id. Pull that one:
 
 ```bash
-ollama pull qwen3-coder:30b-a3b-q4_K_M
+ollama pull qwen3.6:35b-a3b-coding
 ```
 
 `george init` writes `~/.config/george/env` (mode 0600) already pointed
@@ -36,7 +36,7 @@ here. A variable set in the shell wins over the file.
 ```env
 LLM_BASE_URL=http://127.0.0.1:11434/v1
 LLM_API_KEY=ollama
-LLM_MODEL=qwen3-coder:30b-a3b-q4_K_M
+LLM_MODEL=qwen3.6:35b-a3b-coding
 LLM_REASONING_EFFORT=none
 ```
 
