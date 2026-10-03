@@ -46,6 +46,7 @@ func TestDefersPendingWork_CodingCues(t *testing.T) {
 		{`I'll rename "Hello" to "Greet" in both files. Let me first patch a.go, then a_test.go.`, true},
 		{"Now I'll patch a.go.", true},
 		{"Next, I'll run the tests.", true},
+		{"Now I need to update the test file to pass the new parameter.", true},
 		{"Give me one moment while I confirm the connection.", true},
 		{"Renamed Hello to Greet in a.go and a_test.go.", false},
 		{"Changed hi to hello; wc -l says 1. Let me know if you want more.", false},

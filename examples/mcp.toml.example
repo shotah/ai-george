@@ -15,10 +15,6 @@
 #   exclude = ["raw_*"]                    # denylist (shell-style * ?)
 #   tools_prefix = "f"                     # override the {prefix} in {prefix}__{tool}
 #
-# Optional call budget — a vendor quota, counted in george.db at the human's midnight.
-# Over it the tool returns a refusal that names the reset.
-#   budget = "50/month"     # or "1/day"
-#
 # Optional download, for `george tools-fetch` and `george tools-plan`:
 #   download_tag = "v0.0.4"   # or "latest" (resolved through the GitHub API)
 #   download_url = "https://github.com/org/repo/releases/download/{tag}/tool_{version}_{os}_{arch}.tar.gz"

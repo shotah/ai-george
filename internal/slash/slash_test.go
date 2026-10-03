@@ -30,8 +30,8 @@ func TestCatalog_UniqueAndHelp(t *testing.T) {
 	if _, ok := seen["new"]; !ok {
 		t.Fatalf("missing new: %v", seen)
 	}
-	if _, ok := seen["brief"]; !ok {
-		t.Fatalf("missing brief: %v", seen)
+	if _, ok := seen["memory"]; !ok {
+		t.Fatalf("missing memory: %v", seen)
 	}
 	if _, ok := seen["help"]; !ok {
 		t.Fatalf("missing help: %v", seen)

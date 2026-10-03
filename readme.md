@@ -149,7 +149,6 @@ Wiring and naming: [docs/coding-mcp.md](docs/coding-mcp.md),
 | `/status` `/perf` `/tokens` | Uptime and model, last turns' rounds and batches, prompt size |
 | `/tools` `/toolstats` `/memstats` | Tool catalog, per-tool calls since boot, memory row counts by kind and repo |
 | `/memory move <old repo id>` | After a remote rename, bring that id's rows to this repo |
-| `/brief` `/short` `/off` | Hold an MCP prefix on for ~6h or ~27h, or drop the hold |
 | `/help` `/quit` | This list, exit (Ctrl-C at the prompt also exits) |
 
 On a terminal a paste of any length is one message; Enter sends it.

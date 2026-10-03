@@ -268,12 +268,6 @@ func (a *Agent) Handle(ctx context.Context, msg channel.Message) (string, error)
 		return a.memoryMove(ctx, fields[1:]), nil
 	}
 
-	if cmd, prefix, ok := parseEnableHoldCommand(text); ok {
-		unlock := a.lockSession(msg.SessionID)
-		defer unlock()
-		return a.handleEnableHold(ctx, msg.SessionID, cmd, prefix)
-	}
-
 	if cmd, ok := parseCommand(text); ok {
 		switch cmd {
 		case "/new", "/clear":
@@ -337,6 +331,7 @@ func (a *Agent) runTurn(ctx context.Context, msg channel.Message, text string) (
 	defer unlock()
 
 	turnCtx, finish := a.beginTurn(ctx, msg.SessionID, text)
+	turnCtx = withTurnLanes(turnCtx, text)
 	defer func() {
 		if finish() {
 			a.log.Info("agent turn cancelled", "session_id", msg.SessionID)
@@ -498,6 +493,9 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	status, hasStatus := channel.StatusWriterFrom(ctx)
 	nudged := false
 	sawTools := false
+	// A claim nudge can fire before the work and again after it: the
+	// model that patches on the first often claims the check on the second.
+	claimNudges := 0
 
 	// Trajectory accounting: the standing prompt is re-billed every Completer
 	// call, so progress per invocation (tools / iters, max batch, recoveries)
@@ -875,6 +873,19 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				outcomeHint = "stall"
 				return giveUp, nil
 			}
+			if nudge := lanesFrom(ctx).contradiction(res.Content); nudge != "" && claimNudges < 2 && !final {
+				a.log.Warn("reply claims what this turn's calls contradict",
+					"chars", len(res.Content),
+					"iteration", iter+1,
+				)
+				claimNudges++
+				recoveries++
+				messages = append(messages,
+					provider.Message{Role: provider.RoleAssistant, Content: res.Content},
+					provider.Message{Role: provider.RoleUser, Content: nudge},
+				)
+				continue
+			}
 			return res.Content, nil
 		}
 		if a.tools == nil {
@@ -1242,7 +1253,7 @@ func promisesToolCall(content, thinking string) bool {
 		"i'll try", "i will try", "i'm going to try", "i am going to try",
 		"i will call", "i will pull", "i will query", "going to call", "about to call",
 		"going to access", "i'll access", "i am going to access", "i'm going to access",
-		"query body battery", "call this function", "calling the", "call the tool",
+		"call this function", "calling the", "call the tool",
 	}
 	for _, cue := range cues {
 		if strings.Contains(text, cue) {
@@ -1270,7 +1281,7 @@ func defersPendingWork(content string) bool {
 		"while i confirm", "while i check the connection", "confirm the connection",
 		"let me first", "let me now", "let me patch", "let me apply", "let me update",
 		"let me rename", "let me run", "let me read", "let me edit",
-		"i'll first", "i'll now", "now i'll", "next, i'll", "next i'll",
+		"i'll first", "i'll now", "now i'll", "next, i'll", "next i'll", "now i need to",
 		"i'll patch", "i'll apply", "i'll edit", "i'll run the",
 	}
 	for _, cue := range cues {

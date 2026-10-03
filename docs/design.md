@@ -364,8 +364,7 @@ The terminal is the console. No port, no dashboard, no `george status`.
 | Logs | JSON `slog` on stderr |
 
 REPL commands: `/new` `/cancel` `/status` `/tools` `/perf` `/memstats`
-`/memory move <old repo id>` `/toolstats` `/tokens` `/help` `/brief`
-`/short` `/off`, plus `/quit`. The REPL does not read during a turn, so
+`/memory move <old repo id>` `/toolstats` `/tokens` `/help`, plus `/quit`. The REPL does not read during a turn, so
 `/cancel` only runs if it is the line being handled; Ctrl-C is how a
 running turn is stopped. On a terminal the line editor is
 `golang.org/x/term` with bracketed paste on, so a paste is one message and

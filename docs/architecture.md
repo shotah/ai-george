@@ -199,7 +199,7 @@ sequenceDiagram
 
 Slash commands the agent handles: `/new`, `/cancel`, `/status`, `/tools`,
 `/perf`, `/memstats`, `/memory move <old repo id>`, `/toolstats`, `/tokens`,
-`/help`, `/brief`, `/short`, `/off`. `/cancel` only lands if it is the line
+`/help`. `/cancel` only lands if it is the line
 being handled; the REPL does not read during a turn, so Ctrl-C is what stops
 one that is already running.
 
@@ -259,7 +259,7 @@ One WAL SQLite file: `$DATA_DIR/george.db` (default
 | `session` / `session_message` | `session` | history, one session per repo id; the `summary` column is read for an older `george.db` and no longer written |
 | `memory` / `memory_fts` | `memory` | structured long-term memory (FTS5, no embeddings), a `scope` column of `user` or a repo id |
 | `mcp_enable` | `mcpenable` | prefix holds for dynamic tools |
-| `mcp_budget` | `mcp` | per-server call caps from the manifest |
+| `mcp_budget` | none | per-server call caps from the assistant build; an older `george.db` still has the table, nothing reads it |
 
 `SELF.md` lives in the config directory, not SQLite. `/new` deletes the
 session row (cascade messages + summary) after `Voice:` merges into

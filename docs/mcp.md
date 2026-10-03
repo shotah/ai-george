@@ -234,36 +234,6 @@ Boot logs `tools_listed` vs `tools_published`. Schema cost is estimated as
 `est_tokens` (chars/4); `TOOL_SCHEMA_MAX_TOKENS` can hard-fail an oversized set.
 Prefer MCP-native tiers (`--tool-tier core`) first: [design.md](design.md#decisions).
 
-### Call budget (`budget`)
-
-A metered API gets its quota written into the manifest, and the host
-enforces it:
-
-```toml
-[[server]]
-name = "github"
-command = "github-mcp"
-budget = "50/day"        # or "50/month"
-```
-
-Why the host and not the prompt: the model is not a careful caller. A single
-question can produce three to five calls to the same server in one turn.
-Every call ends in the same `Host.call`, so that is where the counter sits,
-after argument validation (a malformed call spends nothing) and before the
-child is touched (a refused call never reaches the vendor).
-
-- Counted per server per period in `george.db` (`mcp_budget`). The day rolls
-  at the **human's** midnight (the persona timezone), the month on their first.
-- Over budget, the tool result is a refusal that names the reset and says
-  not to retry: `mcp: github budget 50/day used (50 calls this day); resets
-  2026-10-03 00:00 PDT — do not retry; use what you already have and tell
-  the human`. The model reports instead of burning.
-- `/tools` shows `budget_refused=N` once anything has been turned away.
-
-The count is of attempts: a call the vendor rejects still spent a slot,
-because it almost certainly spent one of theirs. None of the four coding
-servers ships with a budget.
-
 ### Prefix enable (`dynamic_tools`)
 
 By default (`dynamic_tools` omitted or `true`) MCP schemas stay **off** until
@@ -292,8 +262,7 @@ name = "github"
 force = true          # whole server prefix; pair with a tight `tools` allowlist
 ```
 
-Or `MCP_ENABLE_FORCE=fs,git,shell`. Human overrides: `/brief` `/short`
-`/off`. `/tools` shows published vs available.
+Or `MCP_ENABLE_FORCE=fs,git,shell`. `/tools` shows published vs available.
 
 ---
 

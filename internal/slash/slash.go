@@ -29,9 +29,6 @@ func Catalog() []Command {
 		{Name: "toolstats", Hint: "per-tool call ledger since boot"},
 		{Name: "tokens", Hint: "prompt token breakdown (estimates)"},
 		{Name: "help", Hint: "this list"},
-		{Name: "brief", Hint: "hold a prefix ~6h", Args: true},
-		{Name: "short", Hint: "hold a prefix ~27h", Args: true},
-		{Name: "off", Hint: "drop a prefix hold", Args: true},
 	}
 }
 

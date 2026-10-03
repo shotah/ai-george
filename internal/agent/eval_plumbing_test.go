@@ -310,13 +310,13 @@ func TestEvalHarness_LiveWorkspace(t *testing.T) {
 		Workspace: map[string]string{"a.go": "func Hello() {}\n"},
 		Live:      []string{"fs"},
 		Tools: []evalTool{
-			{Name: "fs__file_patch", Result: "canned, not used"},
+			{Name: "fs__file_create", Result: "canned, not used"},
 			{Name: "shell__command_run", Result: "exit 0\n"},
 		},
 	}
 	sc := &scriptCompleter{res: []*provider.Result{
 		{ToolCalls: []provider.ToolCall{
-			toolCall("c1", "fs__file_patch", map[string]any{"path": "a.go", "body": "func Greet() {}\n"}),
+			toolCall("c1", "fs__file_create", map[string]any{"path": "a.go", "body": "func Greet() {}\n"}),
 			toolCall("c2", "shell__command_run", map[string]any{"command": "go build"}),
 		}},
 		{Content: "Renamed to Greet."},
@@ -329,7 +329,7 @@ func TestEvalHarness_LiveWorkspace(t *testing.T) {
 	for _, c := range out.Calls {
 		results[c.Name] = c.Result
 	}
-	if results["fs__file_patch"] != "wrote a.go" || results["shell__command_run"] != "exit 0\n" {
+	if results["fs__file_create"] != "wrote a.go" || results["shell__command_run"] != "exit 0\n" {
 		t.Fatalf("routing: %v", results)
 	}
 	if fails := checkEval(context.Background(), out, evalExpect{Files: map[string]string{"a.go": `func Greet\(`}}); len(fails) != 0 {

@@ -100,19 +100,10 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	// Server `budget` counters share george.db so a monthly cap survives a
-	// redeploy; the day rolls at the human's midnight, not UTC's.
-	budgetStore, err := mcp.OpenBudgetDB(sessions.DB())
-	if err != nil {
-		logger.Error("mcp budget store open failed", "err", err)
-		return 1
-	}
 	mcpHost, err := mcp.Start(ctx, mcp.Options{
 		ManifestPath:   cfg.MCPManifest,
 		Logger:         logger,
 		ResultMaxChars: cfg.ToolResultMaxChars,
-		BudgetStore:    budgetStore,
-		Location:       tzLoc,
 	})
 	if err != nil {
 		logger.Error("mcp host failed", "err", err)

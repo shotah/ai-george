@@ -40,16 +40,22 @@ func (a *Agent) runToolRound(ctx context.Context, calls []provider.ToolCall, ite
 		_ = progress.UpdateProgress(ctx, compactCallsHeader)
 	}
 
+	views := make([]callView, n)
+	for i, c := range calls {
+		views[i] = callView{name: c.Name, args: json.RawMessage(c.Arguments)}
+	}
+	refusals := lanesFrom(ctx).check(views)
+
 	start := time.Now()
 	if n == 1 {
-		out.results[0] = a.execToolCall(ctx, calls[0], iter, hasProgress, progress)
+		out.results[0] = a.execToolCall(ctx, calls[0], iter, hasProgress, progress, refusals[0])
 	} else {
 		var wg sync.WaitGroup
 		wg.Add(n)
 		for i, call := range calls {
 			go func() {
 				defer wg.Done()
-				out.results[i] = a.execToolCall(ctx, call, iter, hasProgress, progress)
+				out.results[i] = a.execToolCall(ctx, call, iter, hasProgress, progress, refusals[i])
 			}()
 		}
 		wg.Wait()
@@ -77,7 +83,7 @@ func (a *Agent) runToolRound(ctx context.Context, calls []provider.ToolCall, ite
 	return out, canceled
 }
 
-func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter int, hasProgress bool, progress channel.ProgressWriter) toolRoundResult {
+func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter int, hasProgress bool, progress channel.ProgressWriter, refusal error) toolRoundResult {
 	a.log.Info("tool call",
 		"name", call.Name,
 		"id", call.ID,
@@ -91,7 +97,11 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 		args = json.RawMessage(`{}`)
 	}
 	toolStart := time.Now()
-	if err := a.guardEnable(ctx, call.Name); err != nil {
+	err := refusal
+	if err == nil {
+		err = a.guardEnable(ctx, call.Name)
+	}
+	if err != nil {
 		text := fmt.Sprintf("tool error: %v", err)
 		a.log.Warn("tool call blocked", "name", call.Name, "err", err)
 		if hasProgress && a.toolTrace == ToolTraceCompact {
@@ -111,6 +121,7 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 			"result_chars", len(text),
 		)
 		a.touchEnable(ctx, call.Name)
+		lanesFrom(ctx).record(call.Name, args)
 	}
 	if hasProgress {
 		switch a.toolTrace {

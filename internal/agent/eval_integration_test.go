@@ -310,6 +310,10 @@ func assertBadDiffFailsRun(t *testing.T) {
 	bad := "@@ nonsense @@\n-func Hello(\n+func Greet(\n"
 	sc := &scriptCompleter{res: []*provider.Result{
 		{ToolCalls: []provider.ToolCall{
+			toolCall("r1", "fs__file_get", map[string]any{"path": "a.go"}),
+			toolCall("r2", "fs__file_get", map[string]any{"path": "a_test.go"}),
+		}},
+		{ToolCalls: []provider.ToolCall{
 			toolCall("c1", "fs__file_patch", map[string]any{"path": "a.go", "diff": bad}),
 			toolCall("c2", "fs__file_patch", map[string]any{"path": "a_test.go", "diff": bad}),
 		}},
