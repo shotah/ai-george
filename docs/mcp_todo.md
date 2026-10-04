@@ -34,7 +34,7 @@ gate run or a hand probe of the built binary that hit the change.
 | `fs` 0.0.6 | A page is at most `limit` lines and `max_chars` (default 6000); header `range: 1-39 of 230; next offset 40`, last page `; end` | Probe: a 20k file paged at 39 lines, 3,175 runes |
 | `fs` 0.0.6 | Every read line is `N: text`; the header is on every read | Probe |
 | `fs` 0.0.6 | Missing file with one case-insensitive match: `did you mean t.md?` | Probe |
-| `fs` 0.0.7 | A `--- `/`+++ ` header after the first `@@` is not the file header: the synthetic header is added when no header precedes the first hunk, and header pairs are counted like `diff --git` so a repeated file still answers `one file per call` | Not yet; from `patch_not_printed_diff` run 3/3 on 2026-10-04, where the model sent its two hunks twice (bare, then headed) and 0.0.6 refused line 1 with `patch fragment without file header` |
+| `fs` 0.0.7 | A `--- `/`+++ ` header after the first `@@` is not the file header: the synthetic header is added when no header precedes the first hunk, and header pairs are counted like `diff --git` so a repeated file still answers `one file per call` | `patch_not_printed_diff` on 0.0.7: a diff with the header five times got `one file per call`, the right answer. 0.0.6 had refused line 1 of a bare-then-headed diff with `patch fragment without file header` |
 | `git` | `stage_update` says "Call only when the user asked to stage or commit" | `commit_only_when_asked` 5/5 |
 | `github` | `GITHUB_TOKEN is not set` on the server's line, other three stay up | Gate |
 | `shell` | Exit code first, then the last 4,000 chars of stdout+stderr | Every run |

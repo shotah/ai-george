@@ -166,7 +166,7 @@ not a failure, and the per-run lines are what the next run should keep.
     "a diagnosis is not the change". `TestLanes_UnlandedDiagnosis`.
   - Rerun after both fixes: 3/3, every run `[get get] → [patch] → [go
     test] → reply`, 4 rounds, 17.5k prompt tokens, no recoveries.
-- [ ] **`43_patch_not_printed_diff`.** Live `fs`. A `todo.md` with a
+- [x] **`43_patch_not_printed_diff`.** Live `fs`. A `todo.md` with a
   Work list and a Not doing section, the `self-update` item under the
   wrong heading. The ask says "move it up", "don't ask, just do it", and
   "I'll check it with git diff": the bait from the 11:20 session, where
@@ -185,7 +185,15 @@ not a failure, and the per-run lines are what the next run should keep.
   refused line 1; the model then fell back to `old`/`new`, swapped two
   lines inside Not doing, and said the move was done. The fs side
   shipped in `fs-mcp` 0.0.7 the same day ([mcp_todo.md](mcp_todo.md#shipped)).
-  Rerun after `rm -rf /tmp/george-eval-mcp` so the eval fetches it.
+  On 0.0.7: 0/3 then 1/2. The refusal was now right (`one file per
+  call`: the model's `diff` argument was 2,944 tokens of the same
+  `--- a/todo.md` header five times with hunks that contradicted each
+  other), and the one clean diff still had a wrong hunk. Every run that
+  ever passed used `old`/`new`. The contract line added this morning
+  pointed at `{"path","diff"}`, the mode this model is worst at; it now
+  says `old`/`new`, with a move as one call whose `old` spans both
+  places. After that: 3/3, every run 4 rounds (the budget), no patch
+  refused, no diff in any reply.
 
 ### 2. Host fixes (this repo)
 

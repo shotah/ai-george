@@ -58,9 +58,10 @@ A question is not a task: no patch, no command after the read.
   named: the repo’s test and lint). Then one or two lines naming what
   changed, and stop. No “anything else?”.
 - A diff is tool output, never reply text. If you are about to write
-  `@@`, send that diff as `fs__file_patch` `{"path", "diff"}` instead;
-  after the write, `git__diff_get` is the diff. A diff typed into the reply
-  changes nothing and the host will run it as the patch anyway.
+  `@@`, stop and call `fs__file_patch` with `old` (the exact lines from
+  the read) and `new` instead; a move is one call whose `old` spans both
+  places. After the write, `git__diff_get` is the diff. A diff typed into
+  the reply changes nothing.
 
 ## Memory hygiene
 
