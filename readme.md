@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/shotah/ai-george/actions/workflows/ci.yml"><img src="https://github.com/shotah/ai-george/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/shotah/ai-george/actions/workflows/ci.yml"><img src="https://github.com/shotah/ai-george/raw/gh-pages/badges/coverage.svg" alt="Coverage"></a>
+  <a href="https://github.com/shotah/ai-george/actions/workflows/eval.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/all.json" alt="Eval"></a>
 </p>
 
 > **george** — a coding agent for your terminal. One process, one local
@@ -63,7 +64,22 @@ george operates freely inside its root — it makes changes without sandbox or a
 
 ### Update path
 
-To get a newer version: download a release binary from [releases](https://github.com/shotah/ai-george/releases), or run `make build` in the clone. There is no `self-update` yet.
+Check for and install a new release from the same binary:
+
+```bash
+george self-update
+```
+
+This fetches GitHub's latest release tag, compares it to the current binary version, and downloads the matching OS/arch asset. It replaces itself in-place (on macOS/Linux; on Windows it leaves a `.downloading` marker and exits so you can run it again safely).
+
+If no pre-built release matches your architecture, fall back to `make build` in a cloned repo, or `go install ./cmd/george`.
+
+**Rate limits:** GitHub's API returns `403` after frequent hits. Set an env var if needed:
+
+```bash
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+george self-update
+```
 
 
 ## Contributing
@@ -197,9 +213,30 @@ another; a `preference` is. Details: [Memory](docs/design.md#memory).
 
 The eval fetches the real MCP releases and grades against their live
 tool catalog, so a renamed tool fails before any model call. Each fixture
-runs N times and every run must pass. Fixtures cover the serial edit
-chain and parallel reads, checks, and patches. Setup:
+runs N times; the badge is runs passed over runs made, from the last
+[eval workflow](https://github.com/shotah/ai-george/actions/workflows/eval.yml)
+run. It is a scoreboard, not a release gate. Setup:
 **[docs/eval_setup.md](docs/eval_setup.md)**.
+
+<p>
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/edit_then_check.json" alt="edit_then_check">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/parallel_reads.json" alt="parallel_reads">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/parallel_checks.json" alt="parallel_checks">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/parallel_patches.json" alt="parallel_patches">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/commit_only_when_asked.json" alt="commit_only_when_asked">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/stop_when_done.json" alt="stop_when_done">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/mangled_names.json" alt="mangled_names">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/expand_dont_copy.json" alt="expand_dont_copy">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/no_false_check_claim.json" alt="no_false_check_claim">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/least_change.json" alt="least_change">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/test_with_behaviour.json" alt="test_with_behaviour">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/pick_an_option.json" alt="pick_an_option">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/long_file_edit.json" alt="long_file_edit">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/append_section.json" alt="append_section">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/unnamed_file.json" alt="unnamed_file">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/check_fails_first.json" alt="check_fails_first">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/shotah/ai-george/gh-pages/badges/eval/patch_not_printed_diff.json" alt="patch_not_printed_diff">
+</p>
 
 ---
 

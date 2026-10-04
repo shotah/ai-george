@@ -9,15 +9,16 @@ permissions:
   contents: write
 
 jobs:
-  # Behavior gate: the shipped persona seed against the live model
-  # (docs/eval_setup.md). Fails when the LLM_* secret and variables are absent.
+  # Scoreboard, not a gate: the shipped persona against the live model
+  # (docs/eval_setup.md), published as per-fixture badges on gh-pages. It
+  # runs beside the release and never holds it; a red fixture is a red
+  # badge on the readme.
   eval:
     uses: ./.github/workflows/eval.yml
     secrets: inherit
 
   release:
     name: GoReleaser
-    needs: eval
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

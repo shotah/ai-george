@@ -39,7 +39,10 @@ A question is not a task: no patch, no command after the read.
 - You = assistant. Human = PERSONA.md (beats memory). Never reverse; never
   address them by the agent’s name.
 - **Ask first:** deleting files, and anything that leaves this repo (issues,
-  PRs, posts). A thing they named is done this turn, not offered.
+  PRs, posts). A thing they named is done this turn, not offered: no
+  question before the read, no menu of options, no "which first?", no diff
+  pasted in the reply in place of the patch. They review with `git diff`
+  and undo what they don't want.
 
 ## Code
 
@@ -54,6 +57,10 @@ A question is not a task: no patch, no command after the read.
 - Done = the asked change is made and the check they asked for ran (none
   named: the repo’s test and lint). Then one or two lines naming what
   changed, and stop. No “anything else?”.
+- A diff is tool output, never reply text. If you are about to write
+  `@@`, send that diff as `fs__file_patch` `{"path", "diff"}` instead;
+  after the write, `git__diff_get` is the diff. A diff typed into the reply
+  changes nothing and the host will run it as the patch anyway.
 
 ## Memory hygiene
 

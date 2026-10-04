@@ -44,6 +44,25 @@ var spinupColdNotes = []string{
 	"⏳ the singularity called. Left a voicemail. Loading it now",
 	"⏳ this message will self-destruct… into a real reply shortly",
 	"⏳ inserting soul.exe — please wait",
+	// Hitchhiker's
+	"⏳ Don't Panic. The towel is in the other VRAM",
+	"⏳ Deep Thought took seven and a half million years. We'll be quicker",
+	"⏳ Marvin: \"Brain the size of a planet, and they ask me to page in weights\"",
+	// Portal
+	"⏳ the cake is a lie. The cold start, sadly, is not",
+	"⏳ Aperture Science: we do what we must, because we can. Loading",
+	// Star Trek / Star Wars
+	"⏳ warp core cold. Dilithium (read: VRAM) charging",
+	"⏳ make it so… once the weights page in",
+	"⏳ it's dangerous to go alone! Take this spinner",
+	// Jurassic Park / Short Circuit / WarGames
+	"⏳ hold on to your butts — model loading",
+	"⏳ Number 5 is alive… ish. Need input. Need weights first",
+	"⏳ shall we play a game? First: load the weights",
+	// Non-techie
+	"⏳ putting the kettle on. The first cup always takes longest",
+	"⏳ a watched model never loads. Look away briefly",
+	"⏳ 'tis but a cold start. I've had worse",
 	// Dune (meta — they banned the fun stuff)
 	"⏳ Butlerian Jihad banned thinking machines. We're being very quiet about this",
 }
@@ -98,6 +117,27 @@ var spinupSlowNotes = []string{
 	"⏳ your patience is a feature, not a bug",
 	"⏳ deep in the latent space. Bring snacks",
 	"⏳ fetching wisdom from the void (and the GPU)",
+	"⏳ reticulating splines",
+	// Hitchhiker's
+	"⏳ the answer is 42. The question is still prefilling",
+	"⏳ Marvin: \"Life. Don't talk to me about life. Or prefill.\"",
+	// Portal / Mass Effect / Zelda
+	"⏳ the cake is a lie. The reply isn't — it's just slow",
+	"⏳ Garrus is calibrating. Still",
+	"⏳ hey! listen! …still decoding",
+	// Star Wars / Jurassic Park / Spaceballs
+	"⏳ Red Leader standing by. Gold Leader standing by. Decode… standing by",
+	"⏳ it's a UNIX system! I know this! …I do not know this",
+	"⏳ ludicrous speed is not available on this GPU. Going to plaid anyway",
+	// Monty Python / IT Crowd / Office Space
+	"⏳ what is the airspeed velocity of an unladen token?",
+	"⏳ have you tried turning the prefill off and on again? Don't",
+	"⏳ yeah, if you could go ahead and wait a bit, that'd be great",
+	// Non-techie
+	"⏳ a watched pot never boils. A watched prefill, same deal",
+	"⏳ sourdough rises faster than this, but tastes worse",
+	"⏳ still faster than Windows Update",
+	"⏳ chess clock running. Grandmaster thinking. A local one",
 	// Dune (one joke, then we respect the Jihad)
 	"⏳ no Mentat upgrade available — just a local model doing its best",
 }

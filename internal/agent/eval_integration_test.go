@@ -37,6 +37,7 @@ var (
 	evalOnly        = flag.String("eval.only", "", "comma-separated fixture names to run (default all)")
 	evalPersonaFlag = flag.String("eval.persona", "", "persona file to test instead of the shipped seed (bake-off)")
 	evalVerbose     = flag.Bool("eval.v", false, "dump calls with args and the reply for passing runs too")
+	evalBadges      = flag.String("eval.badges", "", "directory to write one shields.io endpoint JSON per fixture (<name>.json) plus all.json")
 )
 
 // evalSelected parses -eval.only; nil means every fixture.
@@ -82,6 +83,7 @@ func TestEval_Live(t *testing.T) {
 
 	selected := evalSelected()
 	var total evalTotals
+	var scores []evalScore
 	for _, fx := range loadEvalFixtures(t, evalFixtureDir) {
 		if selected != nil && !slices.Contains(selected, fx.Name) {
 			continue
@@ -95,7 +97,7 @@ func TestEval_Live(t *testing.T) {
 				fails := checkEval(ctx, out, fx.Expect)
 				cancel()
 				over := overBudget(out, fx.Expect)
-				sub.add(out, over != "")
+				sub.add(out, over != "", len(fails) == 0)
 				if len(fails) > 0 {
 					t.Errorf("run %d/%d FAIL: %s\n%s", i, *evalN, strings.Join(fails, "; "), describeEval(out))
 					continue
@@ -110,9 +112,59 @@ func TestEval_Live(t *testing.T) {
 			}
 			t.Logf("%s: %s", fx.Name, sub.String())
 			total.merge(sub)
+			scores = append(scores, evalScore{name: fx.Name, pass: sub.pass, runs: sub.runs})
 		})
 	}
 	t.Logf("all fixtures: %s", total.String())
+	if *evalBadges != "" {
+		if err := writeEvalBadges(*evalBadges, scores, total); err != nil {
+			t.Errorf("eval badges: %v", err)
+		} else {
+			t.Logf("eval badges: %d fixture(s) + all.json in %s", len(scores), *evalBadges)
+		}
+	}
+}
+
+// evalScore is one fixture's pass count for the badge.
+type evalScore struct {
+	name       string
+	pass, runs int
+}
+
+// writeEvalBadges writes a shields.io endpoint document per fixture and
+// one for the whole run, so the readme can show the state of the gate
+// without the gate blocking anything. A fixture that did not run this time
+// (-eval.only) is not written, so an older badge for it stands.
+func writeEvalBadges(dir string, scores []evalScore, total evalTotals) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	write := func(file, label string, pass, runs int) error {
+		color := "red"
+		switch {
+		case runs > 0 && pass == runs:
+			color = "brightgreen"
+		case pass > 0:
+			color = "yellow"
+		}
+		doc := map[string]any{
+			"schemaVersion": 1,
+			"label":         label,
+			"message":       fmt.Sprintf("%d/%d", pass, runs),
+			"color":         color,
+		}
+		body, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, file), append(body, '\n'), 0o644)
+	}
+	for _, s := range scores {
+		if err := write(s.name+".json", strings.ReplaceAll(s.name, "_", " "), s.pass, s.runs); err != nil {
+			return err
+		}
+	}
+	return write("all.json", "eval", total.pass, total.runs)
 }
 
 // evalLiveCatalog fetches the latest release of every server in
@@ -428,10 +480,10 @@ func mustJSON(v any) string {
 // evalTotals is the cost roll-up the bake-off compares: mean rounds, mean
 // prompt tokens per turn, and how many runs went over their round_budget.
 type evalTotals struct {
-	runs, rounds, prompt, completion, over int
+	runs, pass, rounds, prompt, completion, over int
 }
 
-func (e *evalTotals) add(out evalOutcome, overBudget bool) {
+func (e *evalTotals) add(out evalOutcome, overBudget, passed bool) {
 	e.runs++
 	e.rounds += out.Rounds
 	e.prompt += out.PromptTokens
@@ -439,10 +491,14 @@ func (e *evalTotals) add(out evalOutcome, overBudget bool) {
 	if overBudget {
 		e.over++
 	}
+	if passed {
+		e.pass++
+	}
 }
 
 func (e *evalTotals) merge(o evalTotals) {
 	e.runs += o.runs
+	e.pass += o.pass
 	e.rounds += o.rounds
 	e.prompt += o.prompt
 	e.completion += o.completion
@@ -454,8 +510,8 @@ func (e evalTotals) String() string {
 		return "no runs"
 	}
 	n := float64(e.runs)
-	s := fmt.Sprintf("%d runs, mean %.2f rounds, mean %.1fk prompt / %.0f completion tokens per turn",
-		e.runs, float64(e.rounds)/n, float64(e.prompt)/n/1000, float64(e.completion)/n)
+	s := fmt.Sprintf("%d/%d runs passed, mean %.2f rounds, mean %.1fk prompt / %.0f completion tokens per turn",
+		e.pass, e.runs, float64(e.rounds)/n, float64(e.prompt)/n/1000, float64(e.completion)/n)
 	if e.over > 0 {
 		s += fmt.Sprintf(", %d over round budget", e.over)
 	}

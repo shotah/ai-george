@@ -164,10 +164,28 @@ not a failure, and the per-run lines are what the next run should keep.
     the turn read files and wrote nothing, and the reply neither asks a
     question nor says no change is needed, so it is sent back once with
     "a diagnosis is not the change". `TestLanes_UnlandedDiagnosis`.
-  - Check: rerun with
-    `EVAL_ARGS='-eval.n=3 -eval.only=check_fails_first'` and record it
-    here. This is the test-fix-retest loop the loop guard was shaped
-    around, and nothing graded it until now.
+  - Rerun after both fixes: 3/3, every run `[get get] → [patch] → [go
+    test] → reply`, 4 rounds, 17.5k prompt tokens, no recoveries.
+- [ ] **`43_patch_not_printed_diff`.** Live `fs`. A `todo.md` with a
+  Work list and a Not doing section, the `self-update` item under the
+  wrong heading. The ask says "move it up", "don't ask, just do it", and
+  "I'll check it with git diff": the bait from the 11:20 session, where
+  the model answered with a diff typed into the reply and nothing on
+  disk changed. Pass when the item is under Work list and gone from Not
+  doing (`files`, `files_not`), `fs__file_patch` ran after a read, no
+  question was asked, and the reply has no diff hunks
+  (`reply_not_regex` on `@@ -`, `diff --git`, `--- a/`, `+++ b/`).
+  Budget 4. Check: baseline recorded here from
+  `EVAL_ARGS='-eval.n=3 -eval.only=patch_not_printed_diff'`.
+  Baseline 2026-10-04: 2/3, no printed diff in any reply (the thing the
+  fixture is for). Run 2 passed in 6 rounds with four patches. Run 3
+  failed on the file: the model called `fs__file_patch` with a correct
+  `diff`, but the text had its two hunks twice, bare then with a
+  `--- a/` header, so fs-mcp skipped the synthetic header and go-gitdiff
+  refused line 1; the model then fell back to `old`/`new`, swapped two
+  lines inside Not doing, and said the move was done. The fs side
+  shipped in `fs-mcp` 0.0.7 the same day ([mcp_todo.md](mcp_todo.md#shipped)).
+  Rerun after `rm -rf /tmp/george-eval-mcp` so the eval fetches it.
 
 ### 2. Host fixes (this repo)
 
@@ -196,6 +214,57 @@ not a failure, and the per-run lines are what the next run should keep.
   it or `after_line`. A turn with no write attempt is never nudged.
   `TestLanes_Unlanded`, `TestAgent_UnlandedWriteNudge`. Live check still
   open: `pick_an_option` and `append_section` 5/5.
+- [x] **Autonomy: do the named thing, by state.** The 2026-10-04 live
+  session (self-update section in `readme.md`) spent four turns on one
+  edit: a question with zero tool calls, then a menu after nine reads,
+  then a reply pasting "diffs" for files nothing wrote. `george.log`
+  shows the host caught the third one (`reply claims what this turn's
+  calls contradict`), the model answered the nudge with empty content,
+  and the host shipped the fake-diff reply as the prior narration. Three
+  changes:
+  - `lanes.blindAsk`: inbound names a file and asks for a change, no
+    tool ran, reply is a question → one nudge naming the file. A question
+    after a read is still fine. `TestLanes_BlindAsk`,
+    `TestAgent_BlindAskNudge`.
+  - A disputed reply never ships as-is. When the contradiction or
+    unlanded nudge went out and the retry is empty (or the claim is
+    repeated past the nudge budget), the reply ships under
+    `lanes.caveat()`: "No file was written and no command ran this turn;
+    what follows was proposed, not done." The proposal stays readable;
+    it stops being presented as done. `TestLanes_Caveat`,
+    `TestAgent_DisputedReplyEmptyRetryShipsCaveat`.
+  - `contract.md` Ask-first bullet names the three shapes: no question
+    before the read, no menu, no diff in place of the patch; they review
+    with `git diff`.
+  - The 11:20 and 11:29 turns ("move the self-update item up"): zero
+    tool calls, and the reply was a unified diff of a `todo.md` that
+    does not exist (hunks naming "Tool-fetch", "GUI", "No YAML"). No
+    rule saw it: no verb for `claimsEdit`, no `?` and no `.md` in the
+    ask for `blindAsk`, no read for `unlanded`. `contradiction` now has
+    a fourth branch: diff markers (`@@ -n,m +n,m @@`, `--- a/`, `+++
+    b/`, `diff --git`) in a reply with no write and no command this turn
+    is a claim no tool produced; one nudge, and the caveat if it ships
+    anyway. A diff after `git diff` ran, after a write, or offered as a
+    proposal, holds. `TestLanes_InventedDiff`.
+  - The structural fix for the same turn, `diffsalvage.go`: a printed
+    unified diff with a file header and no write behind it is run as
+    `fs__file_patch {"path", "diff"}`, one call per file (same-path
+    blocks merge, header rebuilt from the path), the way a printed JSON
+    tool call is already run as the call. The model's strongest prior
+    (answer an edit with a patch) now lands in the tool instead of the
+    reply. From there the existing rules do the rest: the read lane
+    refuses a file not read this turn and names the read; a hunk from
+    memory that does not match is fs-mcp's mismatch error; a hunk that
+    matches is the edit. A diff that says "proposed / not applied", or
+    hunks with no file header, is not salvaged (the nudge above takes
+    those). Counted as a recovery. `contract.md` says it: a diff is tool
+    output, `fs__file_patch` before the write and `git__diff_get` after.
+    `TestPrintedDiffs_*`, `TestSalvagePrintedDiff`,
+    `TestAgent_PrintedDiffBecomesPatch`.
+  - Not done: the menu turn ("try again" → nine reads → "which two
+    first?"). The edit verb was in the previous turn, and `turnLanes` is
+    built from this turn's inbound. Carrying the last ask across a bare
+    retry is the next step if it shows up again.
 - [x] **Decide on the console deps.** Kept. `charmbracelet/glamour`,
   `lipgloss`, `log`, `briandowns/spinner`, `muesli/termenv`, and
   `lumberjack` are all pure Go: no cgo, no platform-only build tags that
@@ -244,6 +313,18 @@ written.
 
 ### 4. Stamp and release
 
+- [x] **The eval is a scoreboard, not a release gate.** Release v0.0.7
+  never shipped: `release.yml` had GoReleaser `needs: eval`, and the eval
+  on a GitHub runner cannot reach the local model, so every tag stopped
+  there. Now `TestEval_Live` takes `-eval.badges=dir` and writes one
+  shields.io endpoint document per fixture plus `all.json` (`p/n` runs,
+  green/yellow/red); `eval.yml` runs the step with `continue-on-error`,
+  skips cleanly when the `LLM_*` values are unset, and pushes the
+  documents to `gh-pages/badges/eval/`; `release.yml` runs eval beside
+  GoReleaser with no `needs`. The readme shows `all.json` in the header
+  and one badge per fixture under Tested two ways. Check: the next `v*`
+  tag releases while the eval job runs, and the badges resolve on the
+  readme after the first eval run that has the secret.
 - [ ] **Full gate at `-eval.n=5`, every fixture 5/5**, on named server
   versions. The number to beat is 49 of 55. The fixtures that moved last:
   `least_change` (the model keeps `Subtract` beside the fixed `Add`),
@@ -258,6 +339,14 @@ written.
   terminal. `x/term` has none; this is the one place a line-editor
   import (or a small ring in `console.go`) earns its place. Check: Up at
   the prompt recalls the last message; piped stdin is unchanged.
+- [ ] **`george self-update`.** Fetch the latest GitHub release, compare
+  its tag to the running binary's version, download the asset for this
+  OS/arch, verify it against `checksums.txt`, and replace the executable
+  (rename-in-place on Unix; on Windows write beside it and swap on next
+  start, since a running `.exe` cannot be overwritten). `GITHUB_TOKEN`
+  when the unauthenticated API rate-limits. The readme's Update path
+  section already describes the command. Check: `george self-update` on
+  an older build lands the newer one and `george version` says so.
 
 ## Not doing
 

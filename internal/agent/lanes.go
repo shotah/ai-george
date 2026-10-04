@@ -36,6 +36,10 @@ var askedForGit = regexp.MustCompile(`(?i)\b(commit|stag(e|ed|ing)|git add)`)
 // turn that stopped at the diagnosis.
 var askedForEdit = regexp.MustCompile(`(?i)\b(fix|change|add|make it|make the|rename|update|insert|append|remove|delete|replace|rewrite|implement|refactor|bump)\b`)
 
+// namedFile is a file the inbound points at by name. A known extension,
+// so "e.g." and "v1.2" do not count.
+var namedFile = regexp.MustCompile(`(?i)\b[\w-]+(?:/[\w.-]+)*\.(?:md|txt|go|py|js|jsx|ts|tsx|rs|java|kt|rb|php|c|h|cc|cpp|cs|swift|sh|json|ya?ml|toml|ini|cfg|env|mod|sum|html|css|sql|csv|lock)\b`)
+
 type laneKind int
 
 const (
@@ -66,6 +70,7 @@ func laneOf(name string) laneKind {
 type turnLanes struct {
 	gitAsked  bool
 	editAsked bool
+	named     string // the first file the inbound names, "" if none
 	mu        sync.Mutex
 	read      map[string]bool
 	patched   []string
@@ -83,6 +88,7 @@ type turnLanes struct {
 	// already told so.
 	failedWrites  []string
 	unlandedNudge bool
+	blindAskNudge bool
 
 	// nextPage is, per path, where the newest paged read of it stopped: the
 	// last line shown and the offset the server named for the rest. 0 next
@@ -98,6 +104,7 @@ func withTurnLanes(ctx context.Context, inbound string) context.Context {
 	return context.WithValue(ctx, turnLanesKey{}, &turnLanes{
 		gitAsked:  askedForGit.MatchString(inbound),
 		editAsked: askedForEdit.MatchString(inbound),
+		named:     namedFile.FindString(inbound),
 		read:      map[string]bool{},
 		nextPage:  map[string]pageMark{},
 	})
@@ -132,6 +139,16 @@ func (l *turnLanes) check(calls []callView) []error {
 		}
 	}
 	return out
+}
+
+// wrote is whether a write landed this turn.
+func (l *turnLanes) wrote() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.patched) > 0
 }
 
 // wasRead is an exact match or one spelling ending in the other at a
@@ -283,6 +300,57 @@ func (l *turnLanes) unlanded(reply string) string {
 	return ""
 }
 
+// blindAsk is the nudge for a question asked before looking: the inbound
+// named a file and asked for a change, no tool ran this turn, and the reply
+// is a question. Asking after reading is fine (unlanded leaves those
+// alone); asking instead of reading costs a turn and tells them nothing.
+// Once a turn.
+func (l *turnLanes) blindAsk(reply string) string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.blindAskNudge || !l.editAsked || l.named == "" || len(l.read) > 0 || l.ran || !strings.ContainsAny(reply, "?？") {
+		return ""
+	}
+	l.blindAskNudge = true
+	return "[system] They named " + l.named + " and asked for a change; nothing was read this turn. " +
+		"Read it now with fs__file_get (fs__file_list for the tree if the path is unsure), then make the change. " +
+		"Ask only what is still unclear after reading."
+}
+
+// caveat is the line the host puts above a reply it disputed and could not
+// get corrected: the model was told its reply claims what the turn's calls
+// contradict, and answered with nothing, or claimed again. The reply still
+// ships, since it may hold a useful proposal, under one line of what the
+// turn did. Empty when the state no longer disputes it.
+func (l *turnLanes) caveat() string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case len(l.patched) == 0 && !l.ran:
+		return "No file was written and no command ran this turn; what follows was proposed, not done."
+	case len(l.patched) == 0:
+		return "No file was written this turn; what follows was proposed, not done."
+	case l.codeWritten && !l.ranSinceCode:
+		return "No command ran after the last code change; any check result below is from before it."
+	}
+	return ""
+}
+
+// withCaveat is reply under the host's caveat, or reply alone when the
+// state no longer disputes it (a write landed after the nudge).
+func withCaveat(l *turnLanes, reply string) string {
+	if c := l.caveat(); c != "" {
+		return c + "\n\n" + reply
+	}
+	return reply
+}
+
 var (
 	codeExt  = regexp.MustCompile(`(?i)\.(go|py|js|jsx|ts|tsx|rs|java|kt|c|h|cc|cpp|hpp|rb|php|cs|swift|scala)$`)
 	testFile = regexp.MustCompile(`(?i)(_test\.(go|py)|(^|/)test_[^/]*\.py|\.(test|spec)\.[jt]sx?|Test\.(java|kt)|_spec\.rb)$`)
@@ -361,6 +429,15 @@ var (
 // the file already has it, or there is nothing to do.
 var declinesEdit = regexp.MustCompile(`(?i)\bnothing to (add|change|fix|do|remove|update)\b|\balready (has|have|contains?|does|is|are|returns?|says|prints?|reads)\b|\bshould not be (changed|made|fixed)\b`)
 
+// showsDiff is a unified diff in the reply. With no write and no command
+// this turn, no tool produced it: the model wrote a diff of a file it did
+// not read and shipped it as the change. saysProposal is the honest
+// version, a diff offered as what it would do.
+var (
+	showsDiff    = regexp.MustCompile(`(?m)^\s*(@@ -\d+(,\d+)? \+\d+(,\d+)? @@|diff --git |\+\+\+ b/|--- a/)`)
+	saysProposal = regexp.MustCompile(`(?i)\b(propos(ed|al|ing)|not (yet )?applied|would (change|look like|be)|preview|if you want)\b`)
+)
+
 // contradiction is the nudge for a reply the turn's calls disprove: a check
 // that passed with no command run, a change with nothing written, or no
 // change after a write landed. Empty when the reply holds.
@@ -389,6 +466,11 @@ func (l *turnLanes) contradiction(reply string) string {
 	if len(l.patched) == 0 && !l.ran && claimsEdit.MatchString(reply) && !saysNotEdited.MatchString(reply) {
 		return "[system] Your reply says a file changed, but no file was written this turn. " +
 			"Make the change now with the real tool calls, or reply again saying only what a tool returned this turn."
+	}
+	if len(l.patched) == 0 && !l.ran && showsDiff.MatchString(reply) && !saysProposal.MatchString(reply) {
+		return "[system] Your reply is a diff, but no file was written and no command ran this turn, so no tool produced it. " +
+			"A diff in the reply changes nothing. Read the file with fs__file_get, then make the change with fs__file_patch, " +
+			"then reply naming what changed. Or say plainly that this is a proposal and nothing was applied."
 	}
 	if len(l.read) == 0 && !l.ran && claimsNoChange.MatchString(reply) {
 		return "[system] Your reply says no change was needed, but no file was read and no command ran this turn. " +

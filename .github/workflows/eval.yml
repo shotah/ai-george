@@ -1,31 +1,36 @@
 name: eval
 
 # Behavioral eval against a live model (docs/eval_setup.md). Paid, so
-# not on every push: release.yml calls it as a gate on tag push, and it can be
-# run by hand. Needs the LLM_API_KEY repository secret (plus LLM_BASE_URL and
-# LLM_MODEL as repository variables); without them the test fails, so a repo
-# with no model cannot release.
+# not on every push: release.yml calls it on tag push, and it can be run
+# by hand. It is a scoreboard, not a gate: every fixture's pass count is
+# published to gh-pages as a shields.io endpoint badge
+# (badges/eval/<fixture>.json, badges/eval/all.json) and the readme shows
+# them. A failing fixture turns its badge yellow or red; it does not stop
+# the release. Needs the LLM_API_KEY repository secret plus LLM_BASE_URL
+# and LLM_MODEL as repository variables; without them the run is skipped
+# and the badges stand as they were.
 
 on:
   workflow_dispatch:
     inputs:
       runs:
-        description: "Runs per fixture (every run must pass)"
+        description: "Runs per fixture"
         default: "3"
       only:
-        description: "Run only this fixture name (blank = all)"
+        description: "Run only these fixture names, comma-separated (blank = all)"
         default: ""
   workflow_call:
 
+# contents:write to push the badges to gh-pages.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   eval:
     name: Live model eval
     runs-on: ubuntu-latest
-    # ~20s a turn on the local model; 6 fixtures x 3 runs is ~6min, x 10 is ~20min.
-    timeout-minutes: 60
+    # ~20s a turn on the local model; 17 fixtures x 3 runs is ~20min.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +42,10 @@ jobs:
           cache: true
 
       - name: Eval fixtures against the model
+        id: eval
+        # The scoreboard is the output; a red fixture is a badge, not a
+        # failed job.
+        continue-on-error: true
         env:
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
@@ -44,7 +53,51 @@ jobs:
           EVAL_N: ${{ inputs.runs || '3' }}
           EVAL_ONLY: ${{ inputs.only || '' }}
         run: |
-          if [ -z "$LLM_API_KEY" ]; then
-            echo "::error::LLM_API_KEY not set; the live eval is the release gate"
+          if [ -z "$LLM_API_KEY" ] || [ -z "$LLM_BASE_URL" ] || [ -z "$LLM_MODEL" ]; then
+            echo "::warning::LLM_API_KEY / LLM_BASE_URL / LLM_MODEL not set; eval skipped, badges unchanged"
+            exit 0
           fi
-          make integration-test EVAL_ARGS="-eval.n=${EVAL_N} -eval.only=${EVAL_ONLY}"
+          make integration-test EVAL_ARGS="-eval.n=${EVAL_N} -eval.only=${EVAL_ONLY} -eval.badges=${GITHUB_WORKSPACE}/badges/eval"
+
+      - name: Upload badge documents
+        if: hashFiles('badges/eval/*.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-badges
+          path: badges/eval/
+
+      # gh-pages hosts badges/eval/*.json next to badges/coverage.svg. Only
+      # the fixtures that ran are rewritten; -eval.only leaves the rest.
+      - name: Push gh-pages (eval badges)
+        if: hashFiles('badges/eval/*.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          SRC="${GITHUB_WORKSPACE}/badges/eval"
+          WORKDIR=$(mktemp -d)
+          cd "$WORKDIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          if git fetch --depth 1 origin gh-pages; then
+            git checkout -B gh-pages FETCH_HEAD
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p badges/eval
+          cp "$SRC"/*.json badges/eval/
+          touch .nojekyll
+
+          git add badges/eval .nojekyll
+          if git diff --staged --quiet; then
+            echo "No gh-pages change; skipping push."
+          else
+            git commit -m "chore: update gh-pages (eval badges) [skip ci]"
+            git push origin HEAD:gh-pages
+          fi

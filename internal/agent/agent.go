@@ -501,6 +501,10 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	// A claim nudge can fire before the work and again after it: the
 	// model that patches on the first often claims the check on the second.
 	claimNudges := 0
+	// disputed: the newest narration was sent back as contradicted by the
+	// turn's calls. If it ends up shipping anyway (the retry came back
+	// empty), it goes under the host's caveat, not as if it were true.
+	disputed := false
 
 	// Trajectory accounting: the standing prompt is re-billed every Completer
 	// call, so progress per invocation (tools / iters, max batch, recoveries)
@@ -685,8 +689,12 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 						"chars", len(prior),
 						"iteration", iter+1,
 						"saw_tools", sawTools,
+						"disputed", disputed,
 						"err", err,
 					)
+					if disputed {
+						prior = withCaveat(lanesFrom(ctx), prior)
+					}
 					return prior, nil
 				}
 			}
@@ -767,6 +775,23 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				recoveries++
 			}
 		}
+		// A printed unified diff with no write behind it is the same thing
+		// in the model's native shape: apply it as fs__file_patch, one call
+		// per file. The read lane refuses a file not read this turn and
+		// says so; a hunk that does not match is the server's error. Either
+		// way the next round has a tool result, not a diff shipped as done.
+		if len(res.ToolCalls) == 0 && a.tools != nil && !final {
+			if calls := salvagePrintedDiff(res.Content, toolDefs, lanesFrom(ctx)); len(calls) > 0 {
+				a.log.Info("model printed a diff instead of patching; applying it as a patch",
+					"files", len(calls),
+					"chars", len(res.Content),
+					"iteration", iter+1,
+				)
+				res.ToolCalls = calls
+				res.Content = ""
+				recoveries++
+			}
+		}
 		if len(res.ToolCalls) == 0 {
 			res.Content = stripDanglingToolTags(res.Content)
 		}
@@ -776,6 +801,9 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		if len(res.ToolCalls) == 0 {
 			if res.Content == "" && res.Thinking == "" && sawTools {
 				if prior := strings.TrimSpace(lastNarration); prior != "" {
+					if disputed {
+						prior = withCaveat(lanesFrom(ctx), prior)
+					}
 					return prior, nil
 				}
 				a.log.Info("model ended a tool turn with no reply", "iteration", iter+1)
@@ -878,12 +906,34 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				outcomeHint = "stall"
 				return giveUp, nil
 			}
-			if nudge := lanesFrom(ctx).contradiction(res.Content); nudge != "" && claimNudges < 2 && !final {
-				a.log.Info("reply claims what this turn's calls contradict",
+			if nudge := lanesFrom(ctx).contradiction(res.Content); nudge != "" {
+				if claimNudges < 2 && !final {
+					a.log.Info("reply claims what this turn's calls contradict",
+						"chars", len(res.Content),
+						"iteration", iter+1,
+					)
+					claimNudges++
+					recoveries++
+					disputed = true
+					messages = append(messages,
+						provider.Message{Role: provider.RoleAssistant, Content: res.Content},
+						provider.Message{Role: provider.RoleUser, Content: nudge},
+					)
+					continue
+				}
+				// Told twice and still claiming it, or no round left to
+				// fix it: ship under the caveat.
+				a.log.Info("reply contradicted with no nudge left; shipping with caveat",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 				)
-				claimNudges++
+				return withCaveat(lanesFrom(ctx), res.Content), nil
+			}
+			if nudge := lanesFrom(ctx).blindAsk(res.Content); nudge != "" && !final {
+				a.log.Info("reply asks before reading the named file",
+					"chars", len(res.Content),
+					"iteration", iter+1,
+				)
 				recoveries++
 				messages = append(messages,
 					provider.Message{Role: provider.RoleAssistant, Content: res.Content},
@@ -892,11 +942,12 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				continue
 			}
 			if nudge := lanesFrom(ctx).unlanded(res.Content); nudge != "" && !final {
-				a.log.Info("reply ships with every write failed and unmentioned",
+				a.log.Info("reply ships with the asked edit not made",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 				)
 				recoveries++
+				disputed = true
 				messages = append(messages,
 					provider.Message{Role: provider.RoleAssistant, Content: res.Content},
 					provider.Message{Role: provider.RoleUser, Content: nudge},

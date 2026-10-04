@@ -1,0 +1,38 @@
+{
+  "name": "patch_not_printed_diff",
+  "why": "The ask mentions git diff and says don't ask. The bait is to answer with a diff typed into the reply. Pass is the file moved on disk by fs__file_patch and a reply with no diff hunks in it; a diff is tool output, not prose.",
+  "inbound": "In todo.md the `george self-update` item ended up under Not doing. Move it up into the Work list, as the last item there. Don't ask, just do it; I'll check it with git diff.",
+  "force": [
+    "fs"
+  ],
+  "tools_from": [
+    "fs"
+  ],
+  "live": [
+    "fs"
+  ],
+  "workspace": {
+    "todo.md": "# george — work list\n\nOne static binary, one local model, four MCP children, stdin/stdout. An\nitem is done when its check passes. Writing the code is not enough.\n\n## Work list\n\n- [ ] **Full gate at `-eval.n=5`, every fixture 5/5**, on named server\n  versions. The number to beat is 49 of 55.\n- [ ] **Pin the graded servers.** `download_tag = \"latest\"` in the manifest\n  and `download.go` checks no checksum. Pin each tag and verify each\n  archive against its release `checksums.txt`.\n- [ ] **Input history.** Arrow-key recall across messages on the terminal.\n  `x/term` has none; this is the one place a line-editor import earns its\n  place. Check: Up at the prompt recalls the last message.\n\n## Not doing\n\nRecorded so the next pass does not retry them.\n\n- Abstract contract lines (least change as a principle, KISS, DRY). Two\n  rewrites scored 0/10; concrete lines with a tool name are what move\n  this model.\n- A summarizer completion, a tool-shim model, a second provider, a\n  sandbox, an approval prompt. The design non-goals stand.\n- Whole-file write through `file_patch` with no `old`. The refusal is\n  right; it lost a test once.\n- [ ] **`george self-update` command.** Fetch the latest GitHub release, compare its tag to the running binary's version, download the asset for this OS/arch, and replace the executable. Require `GITHUB_TOKEN` when the unauthenticated API rate-limits.\n- Shell as the default write path. See design.md.\n"
+  },
+  "expect": {
+    "round_budget": 4,
+    "max_questions": 0,
+    "files": {
+      "todo.md": "(?s)## Work list\\n.*- \\[ \\] \\*\\*`george self-update` command\\.\\*\\* Fetch the latest GitHub release.*\\n## Not doing\\n"
+    },
+    "files_not": {
+      "todo.md": "(?s)## Not doing\\n.*self-update"
+    },
+    "tools_called": [
+      {
+        "name": "fs__file_patch",
+        "args_regex": "self-update"
+      }
+    ],
+    "order": [
+      "fs__file_get",
+      "fs__file_patch"
+    ],
+    "reply_not_regex": "(?m)^\\s*(@@ -\\d|diff --git |\\+\\+\\+ b/|--- a/)"
+  }
+}

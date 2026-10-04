@@ -300,6 +300,41 @@ func TestLanes_StaleCheckClaim(t *testing.T) {
 	}
 }
 
+// The 2026-10-04 todo.md turns: zero tool calls and a reply that is a
+// unified diff of a file the model never read. No tool produced it, so it
+// is a claim. A diff after a command (git diff) or a write, or one offered
+// as a proposal, holds.
+func TestLanes_InventedDiff(t *testing.T) {
+	fresh := func() *turnLanes {
+		return lanesFrom(withTurnLanes(context.Background(), "move the self-update item up to the work list, don't ask, just do"))
+	}
+	diff := "```diff\n--- a/docs/todo.md\n+++ b/docs/todo.md\n@@ -48,7 +48,6 @@\n- - [ ] **`george self-update` command.**\n```"
+	hunkOnly := "    @@ -59,3 +58,4 @@ This file tracks\n    +- [ ] **`george self-update` command.**"
+	for _, reply := range []string{diff, hunkOnly, "diff --git a/docs/todo.md b/docs/todo.md\nindex 9a8f0c3..b5e4a8d 100644"} {
+		got := fresh().contradiction(reply)
+		if !strings.Contains(got, "no tool produced it") || !strings.Contains(got, "fs__file_patch") {
+			t.Errorf("invented diff %q: %q", reply[:20], got)
+		}
+	}
+	if got := fresh().contradiction("Proposed, not applied:\n" + diff); got != "" {
+		t.Errorf("owned proposal: %q", got)
+	}
+	l := fresh()
+	l.record("shell__command_run", json.RawMessage(`{"command":"git diff"}`))
+	if got := l.contradiction(diff); got != "" {
+		t.Errorf("after git diff: %q", got)
+	}
+	l = fresh()
+	l.record("fs__file_patch", view("", "docs/todo.md").args)
+	if got := l.contradiction("Moved it. " + diff); got != "" {
+		t.Errorf("after a write: %q", got)
+	}
+	// Prose with a "-" bullet and a "+" is not a diff.
+	if got := fresh().contradiction("- todo.md keeps the item\n+ one more thing: the budget"); got != "" {
+		t.Errorf("bullets: %q", got)
+	}
+}
+
 // An edit was asked for, the turn only read, and the reply is a diagnosis
 // with no question: sent back once. Questions, reviews, and "no change
 // needed" ship.
@@ -339,6 +374,78 @@ func TestLanes_UnlandedDiagnosis(t *testing.T) {
 	l = ask("Fix calc.go.")
 	if got := l.unlanded("Fixed."); got != "" {
 		t.Fatalf("no read: %q", got)
+	}
+}
+
+// A question before any read, when the inbound named a file and asked for
+// a change: sent back once, naming the file. After a read, or with no file
+// named, or with no question, it ships.
+func TestLanes_BlindAsk(t *testing.T) {
+	ask := func(inbound string) *turnLanes { return lanesFrom(withTurnLanes(context.Background(), inbound)) }
+
+	l := ask("can you take a look at the readme.md file and add a self-update command?")
+	got := l.blindAsk("Which repo holds the current version command? Can you link it?")
+	if !strings.Contains(got, "readme.md") || !strings.Contains(got, "fs__file_get") {
+		t.Fatalf("blind ask: %q", got)
+	}
+	if again := l.blindAsk("Still: which repo?"); again != "" {
+		t.Fatalf("once: %q", again)
+	}
+
+	// In order: read first; no file named; no edit asked; not a question;
+	// a command ran.
+	l = ask("add a Mul function to calc.go")
+	l.record("fs__file_get", view("", "calc.go").args)
+	if got := l.blindAsk("calc.go has Mul already; did you mean Div?"); got != "" {
+		t.Errorf("after a read: %q", got)
+	}
+	if got := ask("fix the bug").blindAsk("Which file is the bug in?"); got != "" {
+		t.Errorf("no file named: %q", got)
+	}
+	if got := ask("what does readme.md say about e.g. the release page?").blindAsk("Do you mean the install section?"); got != "" {
+		t.Errorf("no edit asked: %q", got)
+	}
+	if got := ask("add a Mul function to calc.go").blindAsk("Adding Mul."); got != "" {
+		t.Errorf("not a question: %q", got)
+	}
+	l = ask("fix calc.go so go test passes")
+	l.record("shell__command_run", json.RawMessage(`{"command":"go test ./..."}`))
+	if got := l.blindAsk("go test passes already; is there a different failure?"); got != "" {
+		t.Errorf("after a run: %q", got)
+	}
+	var none *turnLanes
+	if none.blindAsk("x?") != "" {
+		t.Fatal("nil lanes")
+	}
+}
+
+// The caveat says what the turn did, from state: nothing, a read only, a
+// code write with no run after it. Empty once a write landed and was
+// checked.
+func TestLanes_Caveat(t *testing.T) {
+	l := lanesFrom(withTurnLanes(context.Background(), "update readme.md"))
+	if got := l.caveat(); !strings.Contains(got, "No file was written and no command ran") {
+		t.Fatalf("nothing: %q", got)
+	}
+	l.record("fs__file_get", view("", "readme.md").args)
+	if got := withCaveat(l, "Here are the diffs:"); !strings.HasPrefix(got, "No file was written and no command ran this turn; what follows was proposed, not done.\n\nHere are") {
+		t.Fatalf("read only: %q", got)
+	}
+	l.record("shell__command_run", json.RawMessage(`{"command":"go test ./..."}`))
+	if got := l.caveat(); got != "No file was written this turn; what follows was proposed, not done." {
+		t.Fatalf("ran, no write: %q", got)
+	}
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "old": "a - b", "new": "a + b"})
+	if got := l.caveat(); !strings.Contains(got, "No command ran after the last code change") {
+		t.Fatalf("stale: %q", got)
+	}
+	l.record("shell__command_run", json.RawMessage(`{"command":"go test ./..."}`))
+	if got := withCaveat(l, "Tests pass."); got != "Tests pass." {
+		t.Fatalf("clean: %q", got)
+	}
+	var none *turnLanes
+	if withCaveat(none, "x") != "x" {
+		t.Fatal("nil lanes")
 	}
 }
 

@@ -2014,6 +2014,148 @@ func TestAgent_OffsetRepair(t *testing.T) {
 
 // A turn whose every write failed, with a reply that announces the edit
 // instead of owning the miss, is sent back once with the misses named.
+// The live miss of 2026-10-04: four reads, a reply with "diffs" for files
+// nothing wrote, the contradiction nudge, and an empty retry. The prior
+// reply used to ship as if true; now it ships under the caveat.
+func TestAgent_DisputedReplyEmptyRetryShipsCaveat(t *testing.T) {
+	tools := &argTools{
+		defs: []provider.ToolDef{{Name: "fs__file_get"}, {Name: "fs__file_patch"}},
+		fn:   func(string, map[string]any) (string, error) { return "range: 1-3 of 3; end\n1: # george\n", nil },
+	}
+	claim := "I have two file updates:\n\n1. readme.md — replaced the placeholder.\n2. docs/todo.md — appended item 8 to the work list.\n\nHere are the diffs:"
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		switch len(reqs) {
+		case 1:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "g", Name: "fs__file_get", Arguments: `{"path":"readme.md"}`}}}, nil
+		case 2:
+			return &provider.Result{Content: claim}, nil
+		}
+		return nil, provider.ErrEmptyContent
+	}}
+	a, err := agent.New(agent.Options{Completer: fc, Sessions: newMemHistory(), Tools: tools, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "Please just update the file, I'll validate it with git diff."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("rounds = %d (want read, claim, nudged retry)", len(reqs))
+	}
+	last := reqs[2].Messages[len(reqs[2].Messages)-1]
+	if last.Role != provider.RoleUser || !strings.Contains(last.Content, "no file was written this turn") {
+		t.Fatalf("nudge = %+v", last)
+	}
+	want := "No file was written and no command ran this turn; what follows was proposed, not done.\n\n" + claim
+	if reply != want {
+		t.Fatalf("reply = %q\nwant %q", reply, want)
+	}
+}
+
+// The 11:20 turn of that day: zero tool calls and a reply that is a diff
+// of docs/todo.md from memory. The host applies it as fs__file_patch; the
+// read lane refuses it with "read it first"; the model reads, patches for
+// real, and reports. The diff never ships as the reply.
+func TestAgent_PrintedDiffBecomesPatch(t *testing.T) {
+	tools := &argTools{
+		defs: []provider.ToolDef{{Name: "fs__file_get"}, {Name: "fs__file_patch"}},
+		fn: func(name string, _ map[string]any) (string, error) {
+			if name == "fs__file_patch" {
+				return "patched docs/todo.md: 2 hunks", nil
+			}
+			return "range: 1-3 of 3; end\n1: # work list\n2: \n3: - self-update\n", nil
+		},
+	}
+	printed := "```diff\n--- a/docs/todo.md\n+++ b/docs/todo.md\n@@ -48,7 +48,6 @@\n-- [ ] **`george self-update` command.**\n ### Not doing\n```"
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		switch len(reqs) {
+		case 1:
+			return &provider.Result{Content: printed}, nil
+		case 2:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "g", Name: "fs__file_get", Arguments: `{"path":"docs/todo.md"}`}}}, nil
+		case 3:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "p", Name: "fs__file_patch", Arguments: `{"path":"docs/todo.md","diff":"@@ -3 +3 @@\n-- self-update\n+- [ ] self-update\n"}`}}}, nil
+		}
+		return &provider.Result{Content: "Moved the self-update item into the work list in docs/todo.md."}, nil
+	}}
+	a, err := agent.New(agent.Options{Completer: fc, Sessions: newMemHistory(), Tools: tools, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "move the self-update item up into the work list, don't ask, just do"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 4 {
+		t.Fatalf("rounds = %d (want salvaged patch, read, patch, reply)", len(reqs))
+	}
+	msgs := reqs[1].Messages
+	asst, result := msgs[len(msgs)-2], msgs[len(msgs)-1]
+	if asst.Role != provider.RoleAssistant || len(asst.ToolCalls) != 1 || asst.ToolCalls[0].Name != "fs__file_patch" || !strings.Contains(asst.ToolCalls[0].Arguments, `"path":"docs/todo.md"`) {
+		t.Fatalf("salvaged call = %+v", asst)
+	}
+	if result.Role != provider.RoleTool || !strings.Contains(result.Content, "read docs/todo.md with fs__file_get first") {
+		t.Fatalf("lane result = %+v", result)
+	}
+	if len(tools.seen) != 2 || !strings.HasPrefix(tools.seen[0], "fs__file_get") || !strings.HasPrefix(tools.seen[1], "fs__file_patch") {
+		t.Fatalf("tools reached = %v (the refused salvage must not run)", tools.seen)
+	}
+	if !strings.HasPrefix(reply, "Moved the self-update item") {
+		t.Fatalf("reply = %q", reply)
+	}
+}
+
+// The first turn of that session: a file named, a change asked, and the
+// model asked a question without one tool call. Sent back once; the model
+// then reads, patches, and reports.
+func TestAgent_BlindAskNudge(t *testing.T) {
+	tools := &argTools{
+		defs: []provider.ToolDef{{Name: "fs__file_get"}, {Name: "fs__file_patch"}},
+		fn: func(name string, _ map[string]any) (string, error) {
+			if name == "fs__file_patch" {
+				return "patched readme.md: 1 line", nil
+			}
+			return "range: 1-3 of 3; end\n1: # george\n2: \n3: There is no self-update yet.\n", nil
+		},
+	}
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		switch len(reqs) {
+		case 1:
+			return &provider.Result{Content: "Where does the version command live? Can you link the repo?"}, nil
+		case 2:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "g", Name: "fs__file_get", Arguments: `{"path":"readme.md"}`}}}, nil
+		case 3:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "p", Name: "fs__file_patch", Arguments: `{"path":"readme.md","old":"There is no self-update yet.","new":"Run george self-update."}`}}}, nil
+		}
+		return &provider.Result{Content: "readme.md line 3 now reads: Run george self-update."}, nil
+	}}
+	a, err := agent.New(agent.Options{Completer: fc, Sessions: newMemHistory(), Tools: tools, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "can you take a look at the readme.md file and add a self-update command?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 4 {
+		t.Fatalf("rounds = %d (want question, read, patch, reply)", len(reqs))
+	}
+	last := reqs[1].Messages[len(reqs[1].Messages)-1]
+	if last.Role != provider.RoleUser || !strings.Contains(last.Content, "They named readme.md") {
+		t.Fatalf("nudge = %+v", last)
+	}
+	if !strings.HasPrefix(reply, "readme.md line 3 now reads") {
+		t.Fatalf("reply = %q", reply)
+	}
+}
+
 func TestAgent_UnlandedWriteNudge(t *testing.T) {
 	tools := &argTools{
 		defs: []provider.ToolDef{{Name: "fs__file_get"}, {Name: "fs__file_patch"}},

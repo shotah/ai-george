@@ -68,8 +68,8 @@ those are the real binaries rooted at a temp dir seeded from the fixture's
    (default `120m`); Go's own default of 10m kills a long run mid-fixture
    with `panic: test timed out`.
 
-   Without the three values it fails. The live eval is the release gate, so
-   it does not skip:
+   Without the three values it fails rather than skips, so a misconfigured
+   local run is never mistaken for a green one:
 
    ```text
    --- FAIL: TestEval_Live (0.00s)
@@ -86,9 +86,15 @@ those are the real binaries rooted at a temp dir seeded from the fixture's
    ```
 
    `-eval.only` takes fixture `name`s (the JSON field, not the file name),
-   comma-separated. Two more flags: `-eval.v` prints every call with its
+   comma-separated. Three more flags: `-eval.v` prints every call with its
    args and the reply for passing runs too (the failure dump, on green);
-   `-eval.persona=path` loads that file instead of the shipped seed.
+   `-eval.persona=path` loads that file instead of the shipped seed;
+   `-eval.badges=dir` writes one shields.io endpoint document per fixture
+   (`dir/<name>.json`: `{"label":"append section","message":"3/3",
+   "color":"brightgreen"}`) plus `dir/all.json` for the whole run. Green
+   is every run passed, yellow some, red none. Only the fixtures that ran
+   are written, so `-eval.only` refreshes those badges and leaves the
+   rest.
 
    Every passing run prints its cost and shape:
 
@@ -155,15 +161,26 @@ Ollama and the pulled weights. Two workflows already read the three values:
   gh workflow run eval.yml -f runs=5 -f only=parallel_patches
   ```
 
-- **`release.yml`** — on a `v*` tag push the `eval` job runs first and
-  GoReleaser `needs` it. Eval fails → no release. Fix the fixture or the
-  persona, then re-run the failed job from the Actions tab (or push the
-  next tag).
+- **`release.yml`** — on a `v*` tag push the `eval` job runs beside
+  GoReleaser, not in front of it. It is a scoreboard, not a gate: a
+  fixture that fails turns its badge yellow or red and the release ships
+  anyway. The gate on a release is `ci.yml` (vet, lint, `go test ./...`,
+  the static build) on the commit being tagged.
 
-Without the secret the eval job fails with `::error::LLM_API_KEY not set`,
-so a fork with no key cannot release. GitHub does not hand secrets to fork
-pull requests, and `ci.yml` does not call the eval — the free goldens are
-the PR gate; this is the release gate.
+Either workflow ends by pushing `badges/eval/*.json` to the `gh-pages`
+branch, next to `badges/coverage.svg`, and the readme renders them through
+`https://img.shields.io/endpoint?url=…/gh-pages/badges/eval/<name>.json`,
+one badge per fixture and `all.json` for the run. Without the secret the
+eval step logs `::warning::… eval skipped, badges unchanged` and exits
+clean, so a fork with no key releases with stale or missing badges, not
+a blocked tag. GitHub does not hand secrets to fork pull requests, and
+`ci.yml` does not call the eval; the free goldens are the PR gate.
+
+The badge is only as good as the model behind the variables. With
+OpenRouter in `LLM_BASE_URL` it reads on a hosted Qwen; the local
+`qwen3.6:35b-a3b-coding` is graded only from a self-hosted runner with
+Ollama on it, or by hand with `-eval.badges` and a push of the documents
+to `gh-pages`.
 
 ## 3. Reading a failure
 
