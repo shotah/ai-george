@@ -76,6 +76,9 @@ func TestLanes_Contradiction(t *testing.T) {
 	for _, reply := range []string{
 		"`Add` in calc.go now returns `a + b`. No tests failed (only Mul had tests).",
 		"Fixed `Add` in calc.go. I didn't run the tests.",
+		"Here’s the `## Still on the radar` section (I inserted it right before Get started):",
+		"I've added a Troubleshooting section to readme.md.",
+		"I updated the install steps in `readme.md`.",
 	} {
 		if l.contradiction(reply) == "" {
 			t.Errorf("nothing written, %q should nudge", reply)
@@ -84,6 +87,9 @@ func TestLanes_Contradiction(t *testing.T) {
 	for _, reply := range []string{
 		"`Add` returns `a - b`; it hasn't been fixed.",
 		"calc.go has `Add`, `Mul`, and `Div`.",
+		"Want me to insert this above Get started? Once it's added, the readme covers setup.",
+		"Here's a draft; I haven't inserted it yet.",
+		"I've added a little note to my internal compass as the example copy.",
 	} {
 		if got := l.contradiction(reply); got != "" {
 			t.Errorf("%q should hold, got %q", reply, got)

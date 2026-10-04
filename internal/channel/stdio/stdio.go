@@ -25,6 +25,11 @@ type Channel struct {
 	Out           io.Writer
 	Err           io.Writer
 	StreamReplies bool
+	// Console, when it is Fancy, shows the turn as a spinner and tool lines
+	// and prints the reply whole. Nil or plain keeps the line-oriented output.
+	Console *Console
+	// Banner (model · repo) replaces the ready line on a fancy Console.
+	Banner string
 	// SessionID is the conversation every line belongs to (the repo id).
 	// Empty is channel.AgentSession.
 	SessionID string
@@ -61,12 +66,16 @@ func (c *Channel) Run(ctx context.Context, handle channel.Handler) error {
 		sessionID = channel.AgentSession
 	}
 
-	_, _ = fmt.Fprintln(errOut, slash.ReadyLine())
+	if c.Console.Fancy() && c.Banner != "" {
+		c.Console.banner(errOut, c.Banner)
+	} else {
+		_, _ = fmt.Fprintln(errOut, slash.ReadyLine())
+	}
 
 	read := c.lineReader(in, out)
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		var done func()
-		read, done = terminalReader(f, out)
+		read, done = terminalReader(f, out, c.Console)
 		defer done()
 	}
 
@@ -117,12 +126,20 @@ func (c *Channel) turn(ctx context.Context, handle channel.Handler, out, errOut 
 	}()
 
 	var stream *printStream
+	var live *consoleStream
 	handleCtx := turnCtx
-	if c.StreamReplies {
+	switch {
+	case c.Console.Fancy():
+		live = newConsoleStream(c.Console)
+		handleCtx = channel.WithReplyWriter(turnCtx, live)
+	case c.StreamReplies:
 		stream = newPrintStream(out)
 		handleCtx = channel.WithReplyWriter(turnCtx, stream)
 	}
 	reply, err := handle(handleCtx, msg)
+	if live != nil && (ctx.Err() != nil || turnCtx.Err() != nil || err != nil) {
+		live.abort()
+	}
 	if ctx.Err() != nil {
 		return true
 	}
@@ -130,11 +147,15 @@ func (c *Channel) turn(ctx context.Context, handle channel.Handler, out, errOut 
 		if stream != nil && stream.Started() {
 			_, _ = fmt.Fprintln(out)
 		}
-		_, _ = fmt.Fprintln(errOut, "cancelled")
+		c.Console.say(errOut, false, "cancelled")
 		return false
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "error: %v\n", err)
+		c.Console.say(errOut, true, fmt.Sprintf("error: %v", err))
+		return false
+	}
+	if live != nil {
+		_ = live.Finish(ctx, reply)
 		return false
 	}
 	if stream != nil && stream.Started() {
@@ -166,23 +187,36 @@ func (c *Channel) lineReader(in io.Reader, out io.Writer) func() (string, error)
 
 // terminalReader puts the terminal in raw mode only while a message is being
 // typed, so Ctrl-C during a turn is a SIGINT and at the prompt is EOF.
-func terminalReader(f *os.File, out io.Writer) (read func() (string, error), done func()) {
+func terminalReader(f *os.File, out io.Writer, con *Console) (read func() (string, error), done func()) {
 	fd := int(f.Fd())
 	t := term.NewTerminal(struct {
 		io.Reader
 		io.Writer
 	}{f, out}, "> ")
 	t.SetBracketedPasteMode(true)
+	var ed lineEditor = t
+	if con.Fancy() {
+		ed = styledPrompt{t, con}
+	}
 	read = func() (string, error) {
 		old, err := term.MakeRaw(fd)
 		if err != nil {
 			return "", err
 		}
 		defer func() { _ = term.Restore(fd, old) }()
-		return readMessage(t)
+		return readMessage(ed)
 	}
 	return read, func() { t.SetBracketedPasteMode(false) }
 }
+
+// styledPrompt colors whatever prompt readMessage sets; term.Terminal does
+// not count escape sequences toward the prompt's width.
+type styledPrompt struct {
+	*term.Terminal
+	con *Console
+}
+
+func (p styledPrompt) SetPrompt(s string) { p.Terminal.SetPrompt(p.con.accent.Render(s)) }
 
 // lineEditor is the part of *term.Terminal readMessage drives.
 type lineEditor interface {

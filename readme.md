@@ -49,6 +49,29 @@ Two ways to get a binary: [download a release](https://github.com/shotah/ai-geor
 or clone the repo and build it. Then install it once and put `george` on
 `PATH` (`~/.local/bin` usually is).
 
+### First-run example
+
+If this is your first time, here's what happens:
+
+```bash
+$ george
+📖  Type something to get started…
+> fix the typo in README.md  ← your text
+... (tool calls follow)
+```
+
+george operates freely inside its root — it makes changes without sandbox or approval. The only safety net is git's undo. Set `GEORGE_ROOT=/path/to/repo` to limit its scope (highly recommended in shared projects).
+
+### Update path
+
+To get a newer version: download a release binary from [releases](https://github.com/shotah/ai-george/releases), or run `make build` in the clone. There is no `self-update` yet.
+
+
+## Contributing
+
+For questions, bugs, or to contribute, see **[docs/eval_setup.md](docs/eval_setup.md)** (setup + contributing notes) and **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)** (what changes from the original harness and the work backlog).
+
+
 ### Download and run
 
 Open the [releases page](https://github.com/shotah/ai-george/releases) and

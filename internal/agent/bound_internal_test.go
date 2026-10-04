@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -122,6 +124,74 @@ func TestCollapse_WindowIsRoundsNotPayloads(t *testing.T) {
 	}
 	if msgs[2].Content == out[2].Content {
 		t.Fatal("expected a collapsed copy, got the original")
+	}
+}
+
+// The live readme turn: the head read in round 1 and the tail in round 3
+// were stubs by the patch in round 4, so `old` came from memory and missed.
+// The newest good read of each page now outlives the window until a write
+// to that file lands; a re-read of the same page replaces the older one.
+func TestCollapse_NewestReadOfAFileStays(t *testing.T) {
+	round := func(id, name, args, result string) []provider.Message {
+		return []provider.Message{
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: id, Name: name, Arguments: args}}},
+			{Role: provider.RoleTool, ToolCallID: id, Content: result},
+		}
+	}
+	head := "range: 1-130 of 199\n# george…"
+	tail := "range: 131-199 of 199\n## Read next…"
+	msgs := slices.Concat(
+		round("r1", "fs__file_get", `{"path":"readme.md"}`, head),
+		round("r2", "fs__file_get", `{"path":"readme.md","offset":200}`, "tool error: offset 200 is past end (199 lines)"),
+		round("r3", "fs__file_get", `{"path":"./readme.md","offset":131}`, tail),
+		round("r4", "fs__file_patch", `{"path":"readme.md","old":"x","new":"y"}`, "tool error: 0 matches for old in readme.md; nothing written"),
+		round("r5", "fs__file_search", `{"query":"Get started"}`, "readme.md:12"),
+	)
+	out := collapseOldToolResults(msgs)
+	if out[1].Content != head || out[5].Content != tail {
+		t.Fatalf("both pages should stay whole for the next patch: %q / %q", out[1].Content, out[5].Content)
+	}
+	if !strings.HasPrefix(out[3].Content, "[tool ") {
+		t.Fatalf("a failed read is not pinned: %q", out[3].Content)
+	}
+
+	msgs = slices.Concat(msgs,
+		round("r6", "fs__file_get", `{"path":"readme.md"}`, head+" again"),
+		round("r7", "git__status_get", `{}`, "clean"),
+		round("r8", "git__diff_get", `{}`, ""),
+	)
+	out = collapseOldToolResults(msgs)
+	if !strings.HasPrefix(out[1].Content, "[tool ") || out[11].Content != head+" again" {
+		t.Fatalf("a re-read of the page replaces the older one: %q / %q", out[1].Content, out[11].Content)
+	}
+
+	msgs = slices.Concat(msgs,
+		round("r9", "fs__file_patch", `{"path":"readme.md","old":"a","new":"b"}`, "patched readme.md"),
+		round("r10", "git__status_get", `{}`, "M readme.md"),
+		round("r11", "git__diff_get", `{}`, "+b"),
+	)
+	out = collapseOldToolResults(msgs)
+	for _, i := range []int{5, 11} {
+		if !strings.HasPrefix(out[i].Content, "[tool ") {
+			t.Fatalf("a read from before the write landed is stale and ages out: %q", out[i].Content)
+		}
+	}
+}
+
+func TestPinnedReads_Bounded(t *testing.T) {
+	var msgs []provider.Message
+	for i := range maxPinnedReads + 3 {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+				{ID: id, Name: "fs__file_get", Arguments: fmt.Sprintf(`{"path":"f%d.go"}`, i)},
+			}},
+			provider.Message{Role: provider.RoleTool, ToolCallID: id, Content: "range: 1-1 of 1\nx\n"},
+		)
+	}
+	got := pinnedReads(msgs)
+	if len(got) != maxPinnedReads || !got[fmt.Sprintf("c%d", maxPinnedReads+2)] || got["c0"] {
+		t.Fatalf("pinned = %v, want the newest %d", got, maxPinnedReads)
 	}
 }
 

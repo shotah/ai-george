@@ -490,6 +490,9 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 	streamer, canStream := a.completer.(provider.Streamer)
 	writer, hasWriter := channel.ReplyWriterFrom(ctx)
 	progress, hasProgress := channel.ProgressWriterFrom(ctx)
+	if _, ok := channel.ToolWriterFrom(ctx); ok {
+		hasProgress = false
+	}
 	status, hasStatus := channel.StatusWriterFrom(ctx)
 	nudged := false
 	sawTools := false
@@ -676,7 +679,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		if err != nil {
 			if errors.Is(err, provider.ErrEmptyContent) {
 				if prior := strings.TrimSpace(lastNarration); prior != "" {
-					a.log.Warn("model returned empty content; keeping prior reply",
+					a.log.Info("model returned empty content; keeping prior reply",
 						"chars", len(prior),
 						"iteration", iter+1,
 						"saw_tools", sawTools,
@@ -752,7 +755,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		// call: nothing can execute there, so text (even ugly) must stand.
 		if len(res.ToolCalls) == 0 && a.tools != nil && !final {
 			if call, ok := salvageToolCall(res.Content, toolDefs, messages); ok {
-				a.log.Warn("model printed a tool call instead of emitting one; executing it",
+				a.log.Info("model printed a tool call instead of emitting one; executing it",
 					"name", call.Name,
 					"chars", len(res.Content),
 					"iteration", iter+1,
@@ -773,7 +776,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				if prior := strings.TrimSpace(lastNarration); prior != "" {
 					return prior, nil
 				}
-				a.log.Warn("model ended a tool turn with no reply", "iteration", iter+1)
+				a.log.Info("model ended a tool turn with no reply", "iteration", iter+1)
 				return "Done.", nil
 			}
 			if res.Content == "" {
@@ -783,7 +786,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 					// ran, promote CoT to the user reply — a nudge rarely
 					// helps and burns another long think. Before tools, nudge
 					// once; if still stuck, ERROR so the human sees it.
-					a.log.Warn("model returned thinking with empty answer",
+					a.log.Info("model returned thinking with empty answer",
 						"thinking_chars", len(res.Thinking),
 						"finish_reason", res.FinishReason,
 						"iteration", iter+1,
@@ -830,7 +833,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			// The landing call has no round after it, so a nudge would run
 			// the loop out into an error.
 			if (preToolTheater || deferral) && !nudged && !final {
-				a.log.Warn("model narrated tool action in prose without calling",
+				a.log.Info("model narrated tool action in prose without calling",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 					"saw_tools", sawTools,
@@ -865,7 +868,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			}
 			if deferral && (nudged || final) {
 				// Second stall after nudge — don't ship "give me a moment" as the reply.
-				a.log.Warn("model deferred again after nudge; forcing give-up",
+				a.log.Info("model deferred again after nudge; forcing give-up",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 				)
@@ -874,7 +877,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 				return giveUp, nil
 			}
 			if nudge := lanesFrom(ctx).contradiction(res.Content); nudge != "" && claimNudges < 2 && !final {
-				a.log.Warn("reply claims what this turn's calls contradict",
+				a.log.Info("reply claims what this turn's calls contradict",
 					"chars", len(res.Content),
 					"iteration", iter+1,
 				)
@@ -888,7 +891,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			}
 			if !final {
 				if nudge := lanesFrom(ctx).unfinished(canRunCommand(toolDefs)); nudge != "" {
-					a.log.Warn("reply lands with code work unfinished",
+					a.log.Info("reply lands with code work unfinished",
 						"chars", len(res.Content),
 						"iteration", iter+1,
 					)
@@ -943,7 +946,7 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 		roundSigs = append(roundSigs, roundSig(res.ToolCalls, round.results))
 		if repeatsCycle(roundSigs) {
 			looped = true
-			a.log.Warn("tool rounds repeating; landing early", "iteration", iters)
+			a.log.Info("tool rounds repeating; landing early", "iteration", iters)
 		}
 		for _, r := range round.results {
 			sawTools = true

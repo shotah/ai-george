@@ -20,6 +20,8 @@ var (
 )
 
 func main() {
+	args, verbose := verbosity(os.Args[1:])
+	os.Args = append(os.Args[:1], args...)
 	cmd := "run"
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
@@ -27,7 +29,7 @@ func main() {
 
 	switch cmd {
 	case "run":
-		os.Exit(run())
+		os.Exit(run(verbose))
 	case "init":
 		os.Exit(initCmd())
 	case "tools-plan":
@@ -45,11 +47,29 @@ func main() {
 	}
 }
 
+// verbosity takes -v, -vv, and --verbose out of args, wherever they sit, and
+// counts them (at most 2).
+func verbosity(args []string) (rest []string, n int) {
+	for _, a := range args {
+		switch a {
+		case "-v", "--verbose":
+			n++
+		case "-vv":
+			n += 2
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return rest, min(n, 2)
+}
+
 func printHelp() {
 	fmt.Fprintf(os.Stderr, `george — coding assistant. One process, one local model, stdin/stdout.
 
 Usage:
-  george [run]        Start a session in this repo (default)
+  george [run] [-v|-vv]  Start a session in this repo (default)
+                      -v shows info logs, -vv debug; the full log is
+                      always in $DATA_DIR/george.log
   george init         Write env, mcp.toml, and persona to ~/.config/george (skips existing)
   george tools-plan   JSON MCP binary inventory from mcp.toml
   george tools-fetch  Download + install MCP binaries declared in mcp.toml

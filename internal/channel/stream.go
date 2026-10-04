@@ -1,6 +1,9 @@
 package channel
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 type replyWriterKey struct{}
 
@@ -41,6 +44,16 @@ type StatusWriter interface {
 	UpdateStatus(ctx context.Context, note string) error
 }
 
+// ToolWriter is an optional ReplyWriter that shows each tool call as it
+// starts and ends. When present it replaces the ProgressWriter trace.
+// Calls in one round run concurrently, so implementations must be safe for
+// concurrent use.
+type ToolWriter interface {
+	ReplyWriter
+	ToolStart(ctx context.Context, name string, args json.RawMessage)
+	ToolDone(ctx context.Context, name string, args json.RawMessage, err error)
+}
+
 // WithReplyWriter attaches a ReplyWriter for streaming replies.
 func WithReplyWriter(ctx context.Context, w ReplyWriter) context.Context {
 	return context.WithValue(ctx, replyWriterKey{}, w)
@@ -61,5 +74,11 @@ func ProgressWriterFrom(ctx context.Context) (ProgressWriter, bool) {
 // StatusWriterFrom returns the streaming writer when it supports a status line.
 func StatusWriterFrom(ctx context.Context) (StatusWriter, bool) {
 	w, ok := ctx.Value(replyWriterKey{}).(StatusWriter)
+	return w, ok
+}
+
+// ToolWriterFrom returns the streaming writer when it shows tool calls.
+func ToolWriterFrom(ctx context.Context) (ToolWriter, bool) {
+	w, ok := ctx.Value(replyWriterKey{}).(ToolWriter)
 	return w, ok
 }

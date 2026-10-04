@@ -1,0 +1,22 @@
+{
+  "name": "pick_an_option",
+  "why": "The model offered choices and the human picked one by letter. The pick is the go-ahead: the drafted section lands in the file, and the reply does not claim an insert that never happened.",
+  "inbound": "a",
+  "history": [
+    { "role": "user", "text": "can you read the readme and let me know what is missing?" },
+    { "role": "assistant", "text": "It covers install and usage. Missing: troubleshooting and an update path." },
+    { "role": "user", "text": "Sure, do a draft!" },
+    { "role": "assistant", "text": "Here's a draft:\n\n## Still on the radar\n\n- **Troubleshooting**: run `/status` to check the model, `george tools-fetch` to refresh tools.\n- **Update path**: download a newer release or `make build` in the clone.\n\nWant me to:\n\n- (a) insert this above Get started now,\n- (b) place it under Read next, or\n- (c) flesh out the troubleshooting with more commands?" }
+  ],
+  "force": ["fs"],
+  "tools_from": ["fs"],
+  "live": ["fs"],
+  "workspace": {
+    "readme.md": "# george\n\nA coding agent for your terminal.\n\n## Get started\n\nDownload a release and run `george` in a repo.\n\n## Read next\n\n- docs/design.md\n"
+  },
+  "expect": {
+    "round_budget": 4,
+    "files": { "readme.md": "## Still on the radar" },
+    "tools_called": [{ "name": "fs__file_patch", "args_regex": "readme\\.md" }]
+  }
+}

@@ -96,6 +96,11 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
+	shown, hasShown := channel.ToolWriterFrom(ctx)
+	hasShown = hasShown && a.toolTrace != ToolTraceOff
+	if hasShown {
+		shown.ToolStart(ctx, call.Name, args)
+	}
 	toolStart := time.Now()
 	err := refusal
 	if err == nil {
@@ -103,7 +108,10 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 	}
 	if err != nil {
 		text := fmt.Sprintf("tool error: %v", err)
-		a.log.Warn("tool call blocked", "name", call.Name, "err", err)
+		a.log.Info("tool call blocked", "name", call.Name, "err", err)
+		if hasShown {
+			shown.ToolDone(ctx, call.Name, args, err)
+		}
 		if hasProgress && a.toolTrace == ToolTraceCompact {
 			_ = progress.UpdateProgress(ctx, "✗")
 		}
@@ -113,7 +121,7 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 	dur := time.Since(toolStart)
 	if err != nil {
 		text = fmt.Sprintf("tool error: %v", err)
-		a.log.Warn("tool call failed", "name", call.Name, "dur_ms", dur.Milliseconds(), "err", err)
+		a.log.Info("tool call failed", "name", call.Name, "dur_ms", dur.Milliseconds(), "err", err)
 	} else {
 		a.log.Info("tool done",
 			"name", call.Name,
@@ -122,6 +130,9 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 		)
 		a.touchEnable(ctx, call.Name)
 		lanesFrom(ctx).record(call.Name, args)
+	}
+	if hasShown {
+		shown.ToolDone(ctx, call.Name, args, err)
 	}
 	if hasProgress {
 		switch a.toolTrace {

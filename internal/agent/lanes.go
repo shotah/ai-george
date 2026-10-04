@@ -223,8 +223,8 @@ var (
 	claimsCheckPassed = regexp.MustCompile(`(?i)\b(tests?|lint|linter|build|vet|checks?)\b[^\n]{0,24}?\b(pass(es|ed)?|passing|succeed(s|ed)?|green|clean)\b|\bexit (code |status )?0\b`)
 	saysNotRun        = regexp.MustCompile(`(?i)(\bnot|n't|\bnever) (been )?(run|ran|verified|checked)\b|\bunverified\b|\buntested\b`)
 	claimsNoChange    = regexp.MustCompile(`(?i)\bno (code|files?|changes?) (was |were |is )?(changed|made|modified|needed|necessary)\b|\bnothing (was )?(changed|modified)\b`)
-	claimsEdit        = regexp.MustCompile(`(?i)\b(fixed|patched|renamed)\b|\bnow (returns|reads|says|uses|calls)\b`)
-	saysNotEdited     = regexp.MustCompile(`(?i)(\bnot|n't|\bnever) (been )?(fixed|patched|renamed|changed)\b`)
+	claimsEdit        = regexp.MustCompile(`(?i)\b(fixed|patched|renamed|inserted|appended)\b|\bnow (returns|reads|says|uses|calls)\b|\b(added|wrote|updated|edited)\b[^\n.]{0,40}?\b(to|in|into) ` + "`?" + `[\w./-]+\.\w{1,4}\b`)
+	saysNotEdited     = regexp.MustCompile(`(?i)(\bnot|n't|\bnever) (been |yet )?(fixed|patched|renamed|changed|inserted|appended|added|written|updated|edited)\b`)
 )
 
 // contradiction is the nudge for a reply the turn's calls disprove: a check

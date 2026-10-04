@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,6 +11,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	charmlog "github.com/charmbracelet/log"
+	"github.com/muesli/termenv"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/shotah/george/internal/agent"
 	"github.com/shotah/george/internal/channel/stdio"
@@ -25,14 +30,15 @@ import (
 )
 
 // run boots config, persona, sessions, MCP host, memory, provider, agent, and stdio.
-func run() int {
+func run(verbose int) int {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 1
 	}
 
-	logger := newLogger(cfg.LogLevel)
+	con := stdio.NewConsole(os.Stdout, os.Stderr)
+	logger := newLogger(cfg.LogLevel, verbose, cfg.DataDir, con)
 	slog.SetDefault(logger)
 
 	root, err := setGeorgeRoot()
@@ -186,7 +192,7 @@ func run() int {
 			APIKey: cfg.BraveSearchAPIKey,
 		})
 		if err != nil {
-			logger.Warn("web search disabled", "err", err)
+			logger.Info("web search disabled", "err", err)
 		} else {
 			tools = websearch.Composite{
 				Search: searchTools,
@@ -288,6 +294,8 @@ func run() int {
 	}
 	ch := stdio.New()
 	ch.StreamReplies = cfg.StreamReplies
+	ch.Console = con
+	ch.Banner = cfg.LLMModel + " · " + tildeHome(repo)
 	ch.SessionID = repo
 
 	if runErr := ch.Run(ctx, ag.Handle); runErr != nil {
@@ -298,19 +306,44 @@ func run() int {
 	return 0
 }
 
-// newLogger builds the process logger.
-func newLogger(level string) *slog.Logger {
-	var lv slog.Level
+// tildeHome shortens a path under $HOME to ~/….
+func tildeHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if rel, err := filepath.Rel(home, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.Join("~", rel)
+	}
+	return p
+}
+
+// newLogger builds the process logger: JSON at LOG_LEVEL into
+// $DATA_DIR/george.log, and short colored lines on the terminal at warn
+// (-v info, -vv debug). The file is never quieter than the terminal.
+func newLogger(level string, verbose int, dataDir string, term io.Writer) *slog.Logger {
+	var fileLv slog.Level
 	switch level {
 	case "debug":
-		lv = slog.LevelDebug
+		fileLv = slog.LevelDebug
 	case "warn":
-		lv = slog.LevelWarn
+		fileLv = slog.LevelWarn
 	case "error":
-		lv = slog.LevelError
+		fileLv = slog.LevelError
 	default:
-		lv = slog.LevelInfo
+		fileLv = slog.LevelInfo
 	}
-	// stderr keeps the stdio REPL on stdout readable.
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
+	termLv := [...]slog.Level{slog.LevelWarn, slog.LevelInfo, slog.LevelDebug}[min(max(verbose, 0), 2)]
+	file := &lumberjack.Logger{
+		Filename:   filepath.Join(dataDir, "george.log"),
+		MaxSize:    10, // MB
+		MaxBackups: 2,
+	}
+	short := charmlog.NewWithOptions(term, charmlog.Options{Level: charmlog.Level(termLv)})
+	// term may wrap stderr rather than be it; color by what stderr is.
+	short.SetColorProfile(termenv.NewOutput(os.Stderr).EnvColorProfile())
+	return slog.New(slog.NewMultiHandler(
+		slog.NewJSONHandler(file, &slog.HandlerOptions{Level: min(fileLv, termLv)}),
+		short,
+	))
 }
