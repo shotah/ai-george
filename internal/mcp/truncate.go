@@ -8,8 +8,12 @@ import (
 	"unicode/utf8"
 )
 
-// rangeHeader is the first line of an fs file_get result: "range: 1-199 of 199".
-var rangeHeader = regexp.MustCompile(`^range: (\d+)-(\d+) of (\d+)\n`)
+// rangeHeader is the first line of an fs file_get result: "range: 1-199 of
+// 199", or since fs-mcp 0.0.6 "range: 1-39 of 230; next offset 40" and
+// "range: 40-230 of 230; end". That server bounds a page by characters
+// itself, so with the default cap this cut is a backstop for a smaller
+// TOOL_RESULT_MAX_CHARS or an older server.
+var rangeHeader = regexp.MustCompile(`^range: (\d+)-(\d+) of (\d+)(?:; [^\n]*)?\n`)
 
 // Truncate limits s to maxChars runes, appending a marker when cut.
 // maxChars <= 0 means no truncation.
@@ -36,8 +40,9 @@ func Truncate(s string, maxChars int) string {
 }
 
 // truncateRange cuts a file read at a whole line and makes its range header
-// say what is shown. Left alone, the header still claimed the whole read, so
-// the model asked for the line after the last one and missed the cut part.
+// say what is shown, in the server's own words ("; next offset N"). Left
+// alone, the header still claimed the whole read, so the model asked for the
+// line after the last one and missed the cut part.
 func truncateRange(s string, maxChars int) (string, bool) {
 	m := rangeHeader.FindStringSubmatch(s)
 	if m == nil {
@@ -62,6 +67,6 @@ func truncateRange(s string, maxChars int) (string, bool) {
 	}
 	cut = cut[:i+1]
 	last := first + strings.Count(cut, "\n") - 1
-	return fmt.Sprintf("range: %d-%d of %s\n%s…[cut at %d chars: lines %d-%d of %s shown; read again with offset %d for the rest]",
-		first, last, total, cut, maxChars, first, last, total, last+1), true
+	return fmt.Sprintf("range: %d-%d of %s; next offset %d\n%s…[cut at %d chars: lines %d-%d of %s shown; read again with offset %d for the rest]",
+		first, last, total, last+1, cut, maxChars, first, last, total, last+1), true
 }

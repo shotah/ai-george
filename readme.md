@@ -30,9 +30,8 @@ name repairs so a small local model can finish a turn, tool results that
 collapse instead of rotting the context, and memory that survives `/new`.
 
 george is a fork of an assistant harness. The assistant parts are gone:
-chat apps, cron, the planner, watches, aims, and todos. What is left and
-what comes next: **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)**.
-The work list is **[docs/todo.md](docs/todo.md)**.
+chat apps, cron, the planner, watches, aims, and todos. What comes next is
+the work list: **[docs/todo.md](docs/todo.md)**.
 
 ---
 
@@ -69,7 +68,7 @@ To get a newer version: download a release binary from [releases](https://github
 
 ## Contributing
 
-For questions, bugs, or to contribute, see **[docs/eval_setup.md](docs/eval_setup.md)** (setup + contributing notes) and **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)** (what changes from the original harness and the work backlog).
+For questions, bugs, or to contribute, see **[docs/eval_setup.md](docs/eval_setup.md)** (setup + contributing notes) and **[docs/todo.md](docs/todo.md)** (the work list).
 
 
 ### Download and run
@@ -160,8 +159,8 @@ The eval numbers only hold for the model they were run against.
 
 Built in, with no MCP server: `memory_store` / `memory_recall` /
 `memory_forget`, `self_note`, `mcp_enable`, and `web_search` (Brave).
-Wiring and naming: [docs/coding-mcp.md](docs/coding-mcp.md),
-[docs/mcp.md](docs/mcp.md).
+Wiring and naming: [docs/mcp.md](docs/mcp.md). Open requests to the four
+servers: [docs/mcp_todo.md](docs/mcp_todo.md).
 
 ## Slash commands
 
@@ -187,8 +186,7 @@ On a terminal a paste of any length is one message; Enter sends it.
 
 Same kind and subject replaces the live row, so a corrected fact
 supersedes the old one. A `fact` stored in one repo is not recalled in
-another; a `preference` is. Details:
-[Memory](docs/coding-agent-plan.md#memory-you-and-the-repo).
+another; a `preference` is. Details: [Memory](docs/design.md#memory).
 
 ## Tested two ways
 
@@ -209,12 +207,11 @@ chain and parallel reads, checks, and patches. Setup:
 
 | If you want… | Go here |
 | --- | --- |
-| What changes from the assistant, and in what order | **[docs/coding-agent-plan.md](docs/coding-agent-plan.md)** |
 | The work list | **[docs/todo.md](docs/todo.md)** |
 | How the harness is put together | **[docs/architecture.md](docs/architecture.md)** |
+| The principles, env, loop, memory, and security | **[docs/design.md](docs/design.md)** |
 | Run the live behavior eval | **[docs/eval_setup.md](docs/eval_setup.md)** |
-| The coding MCP servers | **[docs/coding-mcp.md](docs/coding-mcp.md)** |
-| Why this tree, not goose | **[docs/fork-cli-agent.md](docs/fork-cli-agent.md)** |
+| Requests to the coding MCP servers | **[docs/mcp_todo.md](docs/mcp_todo.md)** |
 | A reading of this repo: pros, cons, whether to use it | **[docs/review_grok47.md](docs/review_grok47.md)**, **[docs/review_fable51.md](docs/review_fable51.md)** |
 
 ## License

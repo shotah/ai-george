@@ -7,6 +7,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -29,6 +30,11 @@ var errLaneRefused = errors.New("refused")
 // askedForGit is the inbound asking to commit or stage. "Don't commit"
 // matches too; the contract line still covers that one.
 var askedForGit = regexp.MustCompile(`(?i)\b(commit|stag(e|ed|ing)|git add)`)
+
+// askedForEdit is the inbound asking for a change to the tree, as opposed
+// to a question or a review. A verb here plus a turn that only read is a
+// turn that stopped at the diagnosis.
+var askedForEdit = regexp.MustCompile(`(?i)\b(fix|change|add|make it|make the|rename|update|insert|append|remove|delete|replace|rewrite|implement|refactor|bump)\b`)
 
 type laneKind int
 
@@ -58,11 +64,12 @@ func laneOf(name string) laneKind {
 }
 
 type turnLanes struct {
-	gitAsked bool
-	mu       sync.Mutex
-	read     map[string]bool
-	patched  []string
-	ran      bool
+	gitAsked  bool
+	editAsked bool
+	mu        sync.Mutex
+	read      map[string]bool
+	patched   []string
+	ran       bool
 
 	// The finish line: code written, its test, and a command after it.
 	codeWritten  bool
@@ -71,14 +78,28 @@ type turnLanes struct {
 	addedFuncs   []string
 	testNudges   int
 	checkNudged  bool
+
+	// Writes that were tried and did not land, and whether the reply was
+	// already told so.
+	failedWrites  []string
+	unlandedNudge bool
+
+	// nextPage is, per path, where the newest paged read of it stopped: the
+	// last line shown and the offset the server named for the rest. 0 next
+	// means the read reached the end.
+	nextPage map[string]pageMark
 }
+
+type pageMark struct{ last, next int }
 
 type turnLanesKey struct{}
 
 func withTurnLanes(ctx context.Context, inbound string) context.Context {
 	return context.WithValue(ctx, turnLanesKey{}, &turnLanes{
-		gitAsked: askedForGit.MatchString(inbound),
-		read:     map[string]bool{},
+		gitAsked:  askedForGit.MatchString(inbound),
+		editAsked: askedForEdit.MatchString(inbound),
+		read:      map[string]bool{},
+		nextPage:  map[string]pageMark{},
 	})
 }
 
@@ -151,6 +172,115 @@ func (l *turnLanes) record(name string, args json.RawMessage) {
 			l.noteWrite(p, args)
 		}
 	}
+}
+
+// A paged read says where it stopped. fs-mcp 0.0.6: "range: 1-39 of 230;
+// next offset 40" (or "; end"); the host's own cut: "read again with offset
+// 40". A read past the end: "offset 400 is past end (last line 300)".
+var (
+	pageHeader   = regexp.MustCompile(`^range: \d+-(\d+) of \d+(?:; next offset (\d+)|; end)?`)
+	hostCutNext  = regexp.MustCompile(`read again with offset (\d+)`)
+	offsetTooFar = regexp.MustCompile(`\boffset \d+ is past (the )?end\b`)
+)
+
+// noteResult reads what a successful call returned, for the parts of it the
+// host acts on later: where a paged read stopped.
+func (l *turnLanes) noteResult(name string, args json.RawMessage, text string) {
+	if l == nil || laneOf(name) != laneRead || !strings.HasSuffix(strings.ToLower(name), "file_get") {
+		return
+	}
+	p := argPath(args)
+	if p == "" {
+		return
+	}
+	m := pageHeader.FindStringSubmatch(text)
+	if m == nil {
+		return
+	}
+	last, _ := strconv.Atoi(m[1])
+	next, _ := strconv.Atoi(m[2])
+	if next == 0 {
+		if c := hostCutNext.FindStringSubmatch(text); c != nil {
+			next, _ = strconv.Atoi(c[1])
+		}
+	}
+	l.mu.Lock()
+	l.nextPage[p] = pageMark{last: last, next: next}
+	l.mu.Unlock()
+}
+
+// continuation is where the newest paged read of path stopped, when it did
+// not reach the end.
+func (l *turnLanes) continuation(args json.RawMessage) (pageMark, bool) {
+	if l == nil {
+		return pageMark{}, false
+	}
+	p := argPath(args)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	m, ok := l.nextPage[p]
+	return m, ok && m.next > 0
+}
+
+// noteFailure keeps a write that did not land, so a reply that goes quiet
+// about it can be sent back.
+func (l *turnLanes) noteFailure(name string, args json.RawMessage, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	k := laneOf(name)
+	if k != lanePatch && !strings.HasSuffix(strings.ToLower(name), "file_create") {
+		return
+	}
+	why := err.Error()
+	if i := strings.IndexByte(why, '\n'); i >= 0 {
+		why = why[:i]
+	}
+	if len(why) > 160 {
+		why = why[:160] + "…"
+	}
+	l.mu.Lock()
+	l.failedWrites = append(l.failedWrites, name+" "+argPath(args)+": "+why)
+	l.mu.Unlock()
+}
+
+// saysWriteFailed is a reply that owns up to an edit that did not land.
+var saysWriteFailed = regexp.MustCompile(`(?i)\b(could ?n[o']t|unable to|failed|did ?n[o']t (land|apply|match|work)|was ?n[o']t (able|written|applied)|no match(es)?|nothing (was )?written)\b`)
+
+// unlanded is the nudge for a reply that ships with the asked edit not
+// made and nothing said about it. Two shapes, once a turn:
+//
+//   - every write this turn failed, and the reply announces the edit or
+//     moves on instead of owning the miss;
+//   - the inbound asked for a change, the turn read files and wrote
+//     nothing, and the reply is a diagnosis with no question in it ("Two
+//     bugs in calc.go: …" and stop).
+//
+// A question or a review (no edit verb in the inbound), a reply that asks
+// something, or one that says no change is needed or the edit failed, is
+// never nudged here.
+func (l *turnLanes) unlanded(reply string) string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.unlandedNudge || len(l.patched) > 0 || saysWriteFailed.MatchString(reply) {
+		return ""
+	}
+	if len(l.failedWrites) > 0 {
+		l.unlandedNudge = true
+		return "[system] No write landed this turn. " + strings.Join(l.failedWrites, "; ") + ". " +
+			"Make the edit now: read the lines you are replacing with fs__file_get and send old exactly as shown " +
+			"(or after_line with new to insert), then reply naming what changed. Or reply saying the edit was not made and why."
+	}
+	if l.editAsked && len(l.read) > 0 && !strings.ContainsAny(reply, "?？") && !claimsNoChange.MatchString(reply) && !declinesEdit.MatchString(reply) {
+		l.unlandedNudge = true
+		return "[system] They asked for a change and this turn only read. A diagnosis is not the change. " +
+			"Make it now with fs__file_patch (old exactly as the read showed it, or after_line with new), run the check, " +
+			"then reply naming what changed. Or reply saying why the change should not be made."
+	}
+	return ""
 }
 
 var (
@@ -227,6 +357,10 @@ var (
 	saysNotEdited     = regexp.MustCompile(`(?i)(\bnot|n't|\bnever) (been |yet )?(fixed|patched|renamed|changed|inserted|appended|added|written|updated|edited)\b`)
 )
 
+// declinesEdit is a read-only turn saying the asked change is not wanted:
+// the file already has it, or there is nothing to do.
+var declinesEdit = regexp.MustCompile(`(?i)\bnothing to (add|change|fix|do|remove|update)\b|\balready (has|have|contains?|does|is|are|returns?|says|prints?|reads)\b|\bshould not be (changed|made|fixed)\b`)
+
 // contradiction is the nudge for a reply the turn's calls disprove: a check
 // that passed with no command run, a change with nothing written, or no
 // change after a write landed. Empty when the reply holds.
@@ -236,10 +370,18 @@ func (l *turnLanes) contradiction(reply string) string {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.ran && claimsCheckPassed.MatchString(reply) && !saysNotRun.MatchString(reply) {
-		if len(l.patched) == 0 {
+	// A check that ran before the last code change says nothing about the
+	// code as it is now: "go test, patch, 'tests pass'" is the same false
+	// claim as never running it.
+	stale := l.codeWritten && !l.ranSinceCode
+	if (!l.ran || stale) && claimsCheckPassed.MatchString(reply) && !saysNotRun.MatchString(reply) {
+		switch {
+		case len(l.patched) == 0:
 			return "[system] Your reply reports a check result, but nothing produced it. No command ran and no file was patched this turn. " +
 				"Do the work now with the real tool calls (the patch, then the check), or reply again saying only what a tool returned this turn."
+		case l.ran:
+			return "[system] Your reply reports a check result, but no command ran after the last code change; the run you have is from before it. " +
+				"Run the check again now with shell__command_run, or reply again saying what changed and that it was not re-checked."
 		}
 		return "[system] Your reply reports a check result, but no command ran this turn. " +
 			"Run the check now with shell__command_run, or reply again saying what changed and that it was not run."

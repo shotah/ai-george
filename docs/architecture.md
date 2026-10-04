@@ -3,9 +3,9 @@
 george is a single static Go binary — a CLI coding agent. You run it in a
 repo, it talks on stdin/stdout, and it exits when you quit. One process, one
 LLM endpoint, four MCP children rooted at that repo (`fs`, `git`, `shell`,
-`github`). Hello path: [root readme](../readme.md). What was cut and what is
-still open: [coding-agent-plan.md](coding-agent-plan.md). Tool names:
-[coding-mcp.md](coding-mcp.md). Pendant, Cab, and gantree stay their own
+`github`). Hello path: [root readme](../readme.md). What is still open:
+[todo.md](todo.md). Tool names: the [Tools table in the
+readme](../readme.md#tools). Pendant, Cab, and gantree stay their own
 repos. This process does not import them.
 
 ## Process view
@@ -321,7 +321,10 @@ posts the layout as-is. The folded HTTP body is pinned as
 | Env file | `github.com/joho/godotenv` | `~/.config/george/env`; does not override the process env |
 | XDG paths | `github.com/adrg/xdg` | Config dir and data dir |
 | MCP manifest | `github.com/pelletier/go-toml/v2` | Minimal TOML for `mcp.toml` |
-| Logging | stdlib `log/slog` | JSON to **stderr** |
+| Logging | stdlib `log/slog` | JSON to `$DATA_DIR/george.log`, short colored lines on stderr |
+| Log file | `gopkg.in/natefinch/lumberjack.v2` | Rotation, 10 MB × 2; pure Go |
+| Terminal log | `github.com/charmbracelet/log` + `muesli/termenv` | `slog.Handler` for the stderr lines; color from what stderr is, `NO_COLOR` honoured |
+| Console | `charmbracelet/lipgloss`, `glamour`, `briandowns/spinner` | Tool lines, markdown reply, still-working spinner in `console.go`; pure Go, no cgo, same binary on every target |
 
 ## Streaming replies
 

@@ -1908,3 +1908,151 @@ func TestAgent_ToolRoundRunsInParallel(t *testing.T) {
 		t.Fatalf("parallel batch missing from /perf: %q", perf)
 	}
 }
+
+// argTools answers by tool name and arguments, so a test can stand in for a
+// paging fs server.
+type argTools struct {
+	defs []provider.ToolDef
+	fn   func(name string, args map[string]any) (string, error)
+	mu   sync.Mutex
+	seen []string
+}
+
+func (f *argTools) Tools() []provider.ToolDef { return f.defs }
+
+func (f *argTools) ToolCount() int { return len(f.defs) }
+
+func (f *argTools) Call(_ context.Context, name string, raw json.RawMessage) (string, error) {
+	var args map[string]any
+	_ = json.Unmarshal(raw, &args)
+	f.mu.Lock()
+	f.seen = append(f.seen, name+" "+string(raw))
+	f.mu.Unlock()
+	return f.fn(name, args)
+}
+
+func (f *argTools) CallStats() mcp.CallStats { return mcp.CallStats{TotalCalls: len(f.seen)} }
+
+// A read past the end, after a paged read of the same file this turn, is
+// answered with the page the server named next, and the result says so. The
+// model asked for offset 200 (its schema's default page) when the page said
+// "next offset 40"; the round is not lost to an error.
+func TestAgent_OffsetRepair(t *testing.T) {
+	tools := &argTools{
+		defs: []provider.ToolDef{{Name: "fs__file_get"}},
+		fn: func(_ string, args map[string]any) (string, error) {
+			switch off, _ := args["offset"].(float64); off {
+			case 0:
+				return "range: 1-39 of 230; next offset 40\n1: a\n", nil
+			case 40:
+				return "range: 40-230 of 230; end\n40: b\n", nil
+			default:
+				return "", fmt.Errorf("offset %d is past end (last line 230)", int(off))
+			}
+		},
+	}
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		switch len(reqs) {
+		case 1:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "r1", Name: "fs__file_get", Arguments: `{"path":"readme.md"}`}}}, nil
+		case 2:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "r2", Name: "fs__file_get", Arguments: `{"path":"readme.md","offset":200}`}}}, nil
+		}
+		return &provider.Result{Content: "230 lines."}, nil
+	}}
+	a, err := agent.New(agent.Options{Completer: fc, Sessions: newMemHistory(), Tools: tools, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "how long is readme.md?"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("rounds = %d", len(reqs))
+	}
+	var second string
+	for _, m := range reqs[2].Messages {
+		if m.Role == provider.RoleTool && m.ToolCallID == "r2" {
+			second = m.Content
+		}
+	}
+	if !strings.HasPrefix(second, "[offset 200 is past the end; the last read of this file stopped at line 39, so this is the page from line 40]\nrange: 40-230 of 230; end") {
+		t.Fatalf("repaired result = %q", second)
+	}
+	if len(tools.seen) != 3 || !strings.Contains(tools.seen[2], `"offset":40`) {
+		t.Fatalf("tool saw %q", tools.seen)
+	}
+	stats, _ := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "/toolstats"})
+	if !strings.Contains(stats, "offset_repair=1") {
+		t.Fatalf("/toolstats = %q", stats)
+	}
+
+	// With no earlier page of that file this turn, the error is the answer.
+	tools.seen = nil
+	reqs = nil
+	fc.fn = func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		if len(reqs) == 1 {
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "x", Name: "fs__file_get", Arguments: `{"path":"other.md","offset":500}`}}}, nil
+		}
+		return &provider.Result{Content: "past the end."}, nil
+	}
+	if _, err := a.Handle(context.Background(), channel.Message{SessionID: "s2", Text: "read other.md from 500"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.seen) != 1 {
+		t.Fatalf("no repair without a page: %q", tools.seen)
+	}
+	for _, m := range reqs[1].Messages {
+		if m.Role == provider.RoleTool && !strings.HasPrefix(m.Content, "tool error: offset 500 is past end") {
+			t.Fatalf("error should stand: %q", m.Content)
+		}
+	}
+}
+
+// A turn whose every write failed, with a reply that announces the edit
+// instead of owning the miss, is sent back once with the misses named.
+func TestAgent_UnlandedWriteNudge(t *testing.T) {
+	tools := &argTools{
+		defs: []provider.ToolDef{{Name: "fs__file_get"}, {Name: "fs__file_patch"}},
+		fn: func(name string, _ map[string]any) (string, error) {
+			if name == "fs__file_patch" {
+				return "", errors.New("0 matches for old in readme.md; nothing written. Nearest: line 184")
+			}
+			return "range: 1-184 of 184; end\n1: # george\n", nil
+		},
+	}
+	var reqs []provider.Request
+	fc := &fakeCompleter{fn: func(req provider.Request) (*provider.Result, error) {
+		reqs = append(reqs, req)
+		switch len(reqs) {
+		case 1:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "g", Name: "fs__file_get", Arguments: `{"path":"readme.md"}`}}}, nil
+		case 2:
+			return &provider.Result{ToolCalls: []provider.ToolCall{{ID: "p", Name: "fs__file_patch", Arguments: `{"path":"readme.md","old":"last line","new":"last line\n\n## Update path\n"}`}}}, nil
+		case 3:
+			return &provider.Result{Content: "The file ends at line 184. I'll append the new section after the last line."}, nil
+		}
+		return &provider.Result{Content: "The edit was not made: `old` did not match anything in readme.md."}, nil
+	}}
+	a, err := agent.New(agent.Options{Completer: fc, Sessions: newMemHistory(), Tools: tools, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := a.Handle(context.Background(), channel.Message{SessionID: "s", Text: "add an Update path section at the end of readme.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 4 {
+		t.Fatalf("rounds = %d (want the nudge round)", len(reqs))
+	}
+	last := reqs[3].Messages[len(reqs[3].Messages)-1]
+	if last.Role != provider.RoleUser || !strings.Contains(last.Content, "No write landed this turn. fs__file_patch readme.md: 0 matches") {
+		t.Fatalf("nudge = %+v", last)
+	}
+	if !strings.HasPrefix(reply, "The edit was not made") {
+		t.Fatalf("reply = %q", reply)
+	}
+}

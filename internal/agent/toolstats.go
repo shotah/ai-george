@@ -16,7 +16,8 @@ func (a *Agent) formatToolStats() string {
 		return "no tool calls yet"
 	}
 	stats := src.CallStats()
-	if stats.TotalCalls == 0 && stats.PrefixAlias == 0 && stats.ConstrainedRetry == 0 && stats.UnknownTool == 0 {
+	offsetRepairs := a.offsetRepairs.Load()
+	if stats.TotalCalls == 0 && stats.PrefixAlias == 0 && stats.ConstrainedRetry == 0 && stats.UnknownTool == 0 && offsetRepairs == 0 {
 		return "no tool calls yet"
 	}
 	uptime := formatUptime(time.Since(a.startedAt))
@@ -39,7 +40,7 @@ func (a *Agent) formatToolStats() string {
 			formatSec(avg), formatSec(row.MaxDurMS),
 		)
 	}
-	fmt.Fprintf(&b, "repairs: prefix_alias=%d  constrained_retry=%d  unknown_tool=%d",
-		stats.PrefixAlias, stats.ConstrainedRetry, stats.UnknownTool)
+	fmt.Fprintf(&b, "repairs: prefix_alias=%d  constrained_retry=%d  unknown_tool=%d  offset_repair=%d",
+		stats.PrefixAlias, stats.ConstrainedRetry, stats.UnknownTool, offsetRepairs)
 	return b.String()
 }

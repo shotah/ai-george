@@ -83,6 +83,37 @@ func (a *Agent) runToolRound(ctx context.Context, calls []provider.ToolCall, ite
 	return out, canceled
 }
 
+// repairOffset answers a read past the end with the page the newest paged
+// read of that file said came next. The model reads a cut at line 59, then
+// asks for offset 200 (its schema's default page) and gets an error that
+// costs the round; the host knows where the rest starts. Only the error
+// path is rewritten, and only when this turn showed an earlier page, so a
+// read that was always past the end stays an error.
+func (a *Agent) repairOffset(ctx context.Context, name string, args json.RawMessage, orig error) (string, error) {
+	mark, ok := lanesFrom(ctx).continuation(args)
+	if !ok {
+		return "", orig
+	}
+	var m map[string]any
+	if json.Unmarshal(args, &m) != nil {
+		return "", orig
+	}
+	asked, _ := m["offset"].(float64)
+	m["offset"] = mark.next
+	fixed, err := json.Marshal(m)
+	if err != nil {
+		return "", orig
+	}
+	text, err := a.tools.Call(ctx, name, fixed)
+	if err != nil {
+		return "", orig
+	}
+	a.offsetRepairs.Add(1)
+	a.log.Info("tool call offset repaired", "name", name, "asked", int(asked), "offset", mark.next)
+	return fmt.Sprintf("[offset %d is past the end; the last read of this file stopped at line %d, so this is the page from line %d]\n%s",
+		int(asked), mark.last, mark.next, text), nil
+}
+
 func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter int, hasProgress bool, progress channel.ProgressWriter, refusal error) toolRoundResult {
 	a.log.Info("tool call",
 		"name", call.Name,
@@ -118,10 +149,14 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 		return toolRoundResult{name: call.Name, id: call.ID, out: text, err: err}
 	}
 	text, err := a.tools.Call(ctx, call.Name, args)
+	if err != nil && laneOf(call.Name) == laneRead && offsetTooFar.MatchString(err.Error()) {
+		text, err = a.repairOffset(ctx, call.Name, args, err)
+	}
 	dur := time.Since(toolStart)
 	if err != nil {
 		text = fmt.Sprintf("tool error: %v", err)
 		a.log.Info("tool call failed", "name", call.Name, "dur_ms", dur.Milliseconds(), "err", err)
+		lanesFrom(ctx).noteFailure(call.Name, args, err)
 	} else {
 		a.log.Info("tool done",
 			"name", call.Name,
@@ -130,6 +165,7 @@ func (a *Agent) execToolCall(ctx context.Context, call provider.ToolCall, iter i
 		)
 		a.touchEnable(ctx, call.Name)
 		lanesFrom(ctx).record(call.Name, args)
+		lanesFrom(ctx).noteResult(call.Name, args, text)
 	}
 	if hasShown {
 		shown.ToolDone(ctx, call.Name, args, err)

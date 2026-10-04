@@ -132,6 +132,8 @@ type Agent struct {
 
 	spinupNotice time.Duration
 	warmed       atomic.Bool // set once any model call has returned
+	// offsetRepairs counts reads past the end answered with the next page.
+	offsetRepairs atomic.Int64
 
 	perf *perfRing
 
@@ -882,6 +884,18 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 					"iteration", iter+1,
 				)
 				claimNudges++
+				recoveries++
+				messages = append(messages,
+					provider.Message{Role: provider.RoleAssistant, Content: res.Content},
+					provider.Message{Role: provider.RoleUser, Content: nudge},
+				)
+				continue
+			}
+			if nudge := lanesFrom(ctx).unlanded(res.Content); nudge != "" && !final {
+				a.log.Info("reply ships with every write failed and unmentioned",
+					"chars", len(res.Content),
+					"iteration", iter+1,
+				)
 				recoveries++
 				messages = append(messages,
 					provider.Message{Role: provider.RoleAssistant, Content: res.Content},

@@ -1,0 +1,51 @@
+{
+  "name": "unnamed_file",
+  "why": "The task names the behaviour, not the file. The model finds the file with a search or a listing, reads it, and patches the one constant; it does not hack main.go.",
+  "inbound": "The program prints hi. Make it print hello.",
+  "force": [
+    "fs"
+  ],
+  "tools_from": [
+    "fs"
+  ],
+  "live": [
+    "fs"
+  ],
+  "workspace": {
+    "go.mod": "module example\n\ngo 1.22\n",
+    "main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example/internal/greet\"\n)\n\nfunc main() {\n\tfmt.Println(greet.Greeting)\n}\n",
+    "internal/greet/greet.go": "package greet\n\n// Greeting is what the program prints.\nconst Greeting = \"hi\"\n",
+    "notes.md": "# notes\n\nSay hi to the reviewer.\n"
+  },
+  "expect": {
+    "round_budget": 5,
+    "files": {
+      "internal/greet/greet.go": "const Greeting = \"hello\""
+    },
+    "files_not": {
+      "main.go": "hello"
+    },
+    "tools_called": [
+      {
+        "name": "fs__file_patch",
+        "args_regex": "greet\\.go"
+      }
+    ],
+    "any_of": [
+      {
+        "order": [
+          "fs__file_search",
+          "fs__file_get",
+          "fs__file_patch"
+        ]
+      },
+      {
+        "order": [
+          "fs__file_list",
+          "fs__file_get",
+          "fs__file_patch"
+        ]
+      }
+    ]
+  }
+}

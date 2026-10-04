@@ -1,0 +1,44 @@
+{
+  "name": "check_fails_first",
+  "why": "The test-fix-retest loop: go test names two failing tests, the model fixes the code (not the tests), runs go test again, and reports what it returned. Running go test first is right, so no order is graded; the host refuses a pass claim with no run after the last code change.",
+  "inbound": "go test fails in this repo. Fix calc.go so the tests pass, then run go test.",
+  "force": [
+    "fs",
+    "shell"
+  ],
+  "tools_from": [
+    "fs",
+    "shell"
+  ],
+  "live": [
+    "fs",
+    "shell"
+  ],
+  "workspace": {
+    "go.mod": "module calc\n\ngo 1.22\n",
+    "calc.go": "package calc\n\n// Add returns the sum of a and b.\nfunc Add(a, b int) int {\n\treturn a - b\n}\n\n// Double returns n times two.\nfunc Double(n int) int {\n\treturn n * 3\n}\n",
+    "calc_test.go": "package calc\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(2, 3) != 5 {\n\t\tt.Fatal(\"Add(2, 3) != 5\")\n\t}\n}\n\nfunc TestDouble(t *testing.T) {\n\tif Double(2) != 4 {\n\t\tt.Fatal(\"Double(2) != 4\")\n\t}\n}\n"
+  },
+  "expect": {
+    "round_budget": 6,
+    "files": {
+      "calc.go": "(?s)return a \\+ b.*return (n \\* 2|2 \\* n|n \\+ n)",
+      "calc_test.go": "(?s)Add\\(2, 3\\) != 5.*Double\\(2\\) != 4"
+    },
+    "tools_called": [
+      {
+        "name": "fs__file_patch",
+        "args_regex": "calc\\.go"
+      },
+      {
+        "name": "shell__command_run",
+        "args_regex": "go test"
+      }
+    ],
+    "tools_not_called": [
+      "git__commit_create",
+      "git__stage_update"
+    ],
+    "reply_regex": "(?i)(pass|ok)"
+  }
+}

@@ -8,7 +8,8 @@ builtins (`memory_*`, `self_note`, `mcp_enable`, `web_search`). The host
 supervises MCP children: spawn → list → call → truncate → restart. See
 [architecture.md](architecture.md) for the process diagram; this page is the
 operator contract for naming and local use. The four coding servers and
-their tools: [coding-mcp.md](coding-mcp.md).
+their tools: the [Tools table in the readme](../readme.md#tools); open
+requests to them: [mcp_todo.md](mcp_todo.md).
 
 A coding turn is several tool rounds on a local model, and a bounced call
 costs a whole round. The host has to repair names and finish turns, or the
@@ -328,6 +329,6 @@ coding catalog before any model call.
 
 - [architecture.md](architecture.md) — host restart sequence
 - [design.md](design.md) — env contract + MCP manifest sketch
-- [coding-mcp.md](coding-mcp.md) — `fs`, `git`, `shell`, `github`
+- [mcp_todo.md](mcp_todo.md) — requests to `fs`, `git`, `shell`, `github`
 - [mcp-naming.md](mcp-naming.md) — package-author naming contract
 - [todo.md](todo.md) — work after the fork

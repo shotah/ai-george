@@ -2,8 +2,7 @@
 
 Harness contract: principles, env, agent loop, memory, ops, packaging,
 security. Pitch and hello path: [root readme](../readme.md). Diagrams:
-[architecture.md](architecture.md). What was cut and what is still open:
-[coding-agent-plan.md](coding-agent-plan.md).
+[architecture.md](architecture.md). What is still open: [todo.md](todo.md).
 
 george is the runtime around one local model so a coding turn finishes.
 The model predicts tokens. The harness makes a tool call land, a bad name
@@ -81,7 +80,8 @@ every round.
 | Runtime | One static binary on `PATH` | No gateway process in front of the model |
 
 MCP tools share one `{server}__{tool}` name and one repair path. Details:
-[mcp.md](mcp.md). The four coding servers: [coding-mcp.md](coding-mcp.md).
+[mcp.md](mcp.md). The four coding servers: the [Tools table in the
+readme](../readme.md#tools).
 
 The graded socket is the local one; Gemini support was dropped.
 `LLM_SYSTEM_FOLD=auto` (the default) folds every system block into one leading
@@ -165,8 +165,9 @@ same change as this table.
 eval's 32k window (`OLLAMA_CONTEXT_LENGTH=32768`): persona and schemas are
 about 6k real tokens, one estimate is about 1.3 real tokens, and the rest is
 left for two whole tool rounds and the completion. Raise it with the window.
-`TOOL_RESULT_MAX_CHARS=6000` stays
-([coding-agent-plan.md](coding-agent-plan.md#defaults-that-fight-a-32k-window)).
+`TOOL_RESULT_MAX_CHARS=6000` stays; since `fs-mcp` 0.0.6 a `file_get` page
+is bounded to that size by the server, so the host's own cut on a read is a
+backstop.
 
 ### MCP manifest
 
@@ -320,8 +321,7 @@ subject stays inside one scope. The repo id is the normalized `origin` URL
 or the root path when there is no remote. The same id is the session id, so
 `george` in repo A resumes repo A's conversation and `/new` resets only
 that one. After a remote rename, `/memory move <old repo id>` brings the
-orphaned rows to the current id; `/memstats` lists the ids it knows. Design
-notes: [coding-agent-plan.md](coding-agent-plan.md#memory-you-and-the-repo).
+orphaned rows to the current id; `/memstats` lists the ids it knows.
 
 ### Builtin tools
 
@@ -425,7 +425,6 @@ approval prompt.
 ## Related
 
 - [architecture.md](architecture.md) — diagrams and sequences
-- [coding-agent-plan.md](coding-agent-plan.md) — the cut list and the phases still open
-- [coding-mcp.md](coding-mcp.md) — `fs`, `git`, `shell`, `github`
+- [mcp_todo.md](mcp_todo.md) — requests to `fs`, `git`, `shell`, `github`
 - [mcp.md](mcp.md) — tool naming and the host
 - [todo.md](todo.md) — the work list

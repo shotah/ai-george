@@ -1,185 +1,275 @@
-# george — work after the fork
+# george — work list
 
-george is the CLI cut of [ai-gantry](https://github.com/shotah/ai-gantry). One process, one local model, MCP tools, stdin/stdout. The binary is `george`.
+One static binary, one local model, four MCP children, stdin/stdout. The
+graded model is `qwen3.6:35b-a3b-coding` on Ollama with a 32k window.
+What it is: [design.md](design.md). How it is wired:
+[architecture.md](architecture.md). How to run the gate:
+[eval_setup.md](eval_setup.md). Requests to the four servers:
+[mcp_todo.md](mcp_todo.md).
 
-The job is a local agent you can grade. A green run on Gemini does not count. A family tag (`qwen3`, `qwen2.5`, `qwen3-coder:latest`) does not count. The eval names one model with a size and a quant, and every run on that model has to pass.
+An item is done when its check passes. Writing the code is not enough.
+Stamp with `make integration-test EVAL_ARGS='-eval.n=5'`; iterate at
+`-eval.n=1` to `3`.
 
-This file is the work list. The other notes beside it are the goose-side evidence (`fork-cli-agent.md`, `ollama-and-llama.md`, `extra-model-calls.md`, `storage.md`). They are not the design of george.
+## Where we stand
 
-goose stays where it is. Do not port its provider matrix, recipes, desktop, or second agent loop.
+The fork is finished. Stdio, per-repo session and memory, bracketed paste,
+Ctrl-C that cancels a turn, name repair, round collapse with whole
+arguments, the loop guard, the landing call, host refusals for
+read-before-patch and unasked git, the claim and finish-line nudges, real
+`fs` and `shell` in the eval, and the household cut are all in the binary
+and covered by `go test ./...`. The assistant-era weight (budgets, auth,
+holds, `CallRaw`) is deleted. The previous work list, with every reading
+that got here, is in git history.
 
-## 1. Fork and rename
+Last full gate, twelve fixtures at `-eval.n=5`: 49 of 55, plus
+`pick_an_option` 3/5 run alone.
 
-- [x] Fork `ai-gantry` into the new repo. Module, binary, module path, and user-facing strings become `george`.
-- [x] Leave the gantry name on the crane. Pendant, Cab, and gantree stay their own repos. george does not import them.
-- [x] Default channel is stdio. `george` with no `CHANNEL` set talks on stdin/stdout. A missing channel must not come up as Telegram.
-- [x] Not Docker-based. george is a CLI you run in a repo, not a long-lived container. The container files, the `docker-*` targets, and the Docker docs are gone. The root comes from the cwd: george sets `GEORGE_ROOT` to the git toplevel, and `mcp.toml` passes `--root ${GEORGE_ROOT}`. Detail: [coding-agent-plan.md](coding-agent-plan.md#where-it-lives-no-docker).
-- [x] Config in `~/.config/george/`, data in `~/.local/share/george/`. `george init` writes `env`, `mcp.toml`, `PERSONA.md`, and `SELF.md` there; `tools-fetch` installs into `~/.local/share/george/bin`, which george puts first on `PATH`. `deploy/` is gone. See [the work list](#8-work-list).
+| 5/5 | 4/5 | 3/5 |
+| --- | --- | --- |
+| `parallel_reads`, `parallel_checks`, `commit_only_when_asked`, `stop_when_done`, `mangled_names`, `no_false_check_claim` | `edit_then_check`, `parallel_patches`, `expand_dont_copy`, `test_with_behaviour` | `least_change`, `pick_an_option` |
 
-## 2. Pin the model the eval grades
+Every fixture's workspace is under ten lines. That is the problem with the
+number.
 
-Write one id, in one place, that the live eval reads. Include the size and the quant. Example shape, not a decision: `qwen2.5-coder:32b` at `Q4_K_M`, or a GGUF repo plus quant such as `bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M`. Pick the model you will actually run.
+## The gap
 
-- [x] Record that id in the eval env (the same three values gantry already uses: base URL, model, key). The model string is the full id. `qwen3.6:35b-a3b-coding` in `.env.example`. It replaced `qwen3-coder:30b-a3b-q4_K_M`, which never passed `parallel_patches`; at `-eval.n=2` the new id scored 11 of 12 on the full gate.
-- [x] ~~Refuse to start the live eval when the model string is a family tag.~~ Dropped: george can't know every model name, and picking one is the user's call. Instead, a model the server doesn't have fails with `model "bad_name" was not found at LLM_BASE_URL; set LLM_MODEL to one the server has (Ollama: ollama list)`. See [the work list](#8-work-list).
-- [x] Print the id at the top of every live run, next to the pass line, so a green log says which weights were graded.
-- [x] First live reading is that local id. A Flash log is unread until this one passes.
+A live session on this repo's own `readme.md` (223 lines, 9.3k chars) and
+`docs/todo.md` (184 lines, 46k chars) failed the way the gate never sees.
+The transcript, in order:
 
-goose’s published local claims, for the record you are walking away from:
+```text
+✓ read docs/todo.md                      host cut it: "lines 1-59 of 184 shown; read again with offset 60"
+✗ read docs/todo.md: offset 200 is past end (184 lines)
+✗ edit docs/todo.md: 0 matches for old in docs/todo.md; nothing written
+✓ read … ✓ read … ✗ edit: 0 matches … ✓ read … ✓ read
+  "The file ends at line 184. I'll append the new section after the last line."   ← turn ends, nothing written
+```
 
-| Place | String they wrote |
-| --- | --- |
-| Known issues, “works with extensions” | `qwen2.5` |
-| Ollama setup example | `ollama run qwen2.5` |
-| LM Studio example | `qwen2.5-7b-instruct` |
-| Custom distro default | `qwen3-coder:latest` |
-| Code default `OLLAMA_DEFAULT_MODEL` | `qwen3` |
-| Known-name list | `qwen3`, `qwen3-vl`, `qwen3-coder:30b`, `qwen3-coder:480b-cloud` |
-| Skipped live test | `qwen3`, `qwen3-vl` |
-| XML-parser comment, models that drop native tool calls | `qwen3-coder`, `qwen3-coder-32b` |
+The model's plan was right every time (read, patch, report). Three
+mechanical things stopped it, and all three are in the file interface, not
+in the model:
 
-Those strings do not name one model. The March 2025 goose benchmark did (`qwen2.5-coder:32b` Q4_K_M and three siblings). That post is not a test that still runs.
+1. **Two pagers.** `fs__file_get` pages by lines (`limit`, default 200).
+   The host pages by characters (`TOOL_RESULT_MAX_CHARS=6000`) and cuts the
+   read at line 59. The schema says 200, the result says 60; the model
+   follows the schema and asks for offset 200. One read is lost on every
+   file over one page.
+2. **`old` is an exact match, and only that.** A probe against `fs-mcp`
+   as installed: a straight `'` for `’`, a `-` for `—`, or a dropped
+   trailing space is `0 matches`, with no hint of the nearest line. A Q4
+   model reproducing a 3,000-char markdown line from a read two rounds ago
+   will drift by one character. Every "0 matches" costs a read and a
+   patch round, and after two the model gives up.
+3. **Nothing anchors an append.** "Add a section at the end" means quoting
+   the last line exactly as `old` and sending it back plus the new text.
+   Reads carry no line numbers (patch results do), so "after line 184" is
+   not a call the model can make.
 
-## 3. Grade tool calls on that model
+Each failure is one the SWE-agent paper measured: a raw file interface
+loses to a viewer with line numbers, a bounded page, and an editor that
+says what went wrong. The gate did not catch any of it because no fixture
+has a file that spans a page or a line with a curly quote.
 
-Keep gantry’s two contracts.
+Since then: `fs-mcp` 0.0.6 owns the page (one pager, numbered lines, a
+forgiving `old`, a nearest-line hint, `after_line`), the host repairs a
+past-end read and sends back a reply that goes quiet about a failed
+write, and four fixtures reproduce the session. The live reading on those
+four is the next thing to take.
 
-- [x] Goldens stay free and on every push: the bytes from stdin JSON through the completer request to the HTTP body.
-- [ ] `make integration-test` stays the paid gate: tools, arguments, call counts, memory rows. It checks shape, not the sentence. Every run passes, or the rule is not carried. The gate exists; not every run passes yet. See *Teach it what "done" is* in [the work list](#8-work-list).
-- [x] Add one fixture whose only job is a mangled MCP name on the pinned model: dot instead of the separator, a hyphen in the server prefix, and a near-miss. The child that runs is the real tool. A pasted XML string in a unit test does not satisfy this. Done: `33_mangled_names`, 5/5. See *Mangled-name live fixture* in [the work list](#8-work-list).
-- [x] Keep the repair on the session model: prefix alias, at most five closest names, one grammar-constrained retry, salvage a call printed as JSON, a landing call when the iteration budget runs out. Count them. `/toolstats` prints them.
-- [x] Confirm `LLM_SYSTEM_FOLD` against this model’s chat template before you trust a red or a green. The open risk is a template that renders system text only at position 0. If the model cannot see the harness block, tool-call failures are a prompt-placement bug. It was: the renderer drops later system messages, so `auto` now folds. See *Fold vs. the qwen template* in [the work list](#8-work-list).
+### Why not write through the shell
 
-## 4. Keep the loop small enough for that model
+The question came up: make `shell__command_run` the write path and let the
+model `sed -i` and `cat >> file <<EOF`. No, as the default:
 
-- [x] Last two tool rounds stay whole, including a parallel batch. Older rounds become a one-line marker in-process. No completion spent to describe a tool pair.
-- [x] Schemas stay off until that prefix is enabled. The prefix list itself stays a stable line.
-- [x] Fold stays one completion. No second “store everything now” turn.
-- [x] Quiet watches poll a tool and do not call the model. Moot: the clock and its watches are gone.
-- [x] Memory stays SQLite you can open with `sqlite3`. FTS is fine. No embedding call, no vector column, no vector database.
-- [x] Auto-save of every turn stays off. A row lands because the model stored it, or because a consolidator promoted an episode that was stored on purpose. The consolidator is gone too.
+- The command rides inside a JSON string. A heredoc with backticks,
+  `$HOME`, `${GEORGE_ROOT}`, and `'` (every line of this readme) has to be
+  escaped twice, and an unquoted delimiter expands `$`. That is a harder
+  exact-match problem than `old`, not an easier one.
+- `sed` is regex, so `*`, `.`, `[`, `/` in markdown need escaping, and
+  macOS `sed -i ''` is not GNU `sed -i`.
+- A whole-file `cat >` from a 35B model omits the middle ("rest
+  unchanged"). The previous list already recorded a patch with no `old`
+  replacing a whole test file and losing a test.
+- `lanes.go` cannot see a shell write. Read-before-patch, the pinned reads,
+  the test and check nudges, and the claim check all key off `fs__file_patch`
+  arguments. Every write through the shell is a false "nothing was written"
+  nudge.
+- The eval would still grade `expect.files`, but `tools_called` and
+  `same_round` lose their meaning.
 
-## 5. Cut what grew up on Gemini
+The shell is already there for the cases it is right for: a mass rename
+across many files (`gofmt -r`, `sed -i` over a glob), a generator, a
+formatter. The contract does not forbid it. The fix is to make `fs` the
+editor a small model can drive, which is the list below.
 
-Do this after the fork boots on stdio, before adding features. The planner and the mouths are why a local model stopped being the daily driver. The full cut list, phase order, and coding eval set are [coding-agent-plan.md](coding-agent-plan.md).
+## Plan
 
-- [x] Remove Telegram, Discord, and Slack from the default path. Delete them once stdio is the product, or leave them behind a build tag you do not ship. Deleted. `config.CheckRetired` refuses their env vars. A few comments still name Telegram; see *Stale Telegram comments* in [the work list](#8-work-list).
-- [x] Remove the daily planner note (the long policy string, measured near 460 words). Small models drop the middle. Goldens will stay green while the model ignores a clause. That is the failure mode. The session is a short pull-and-schedule note. The aims ladder, the todo essay, and the room redress are out of `DefaultDailyPlannerPrompt` and `plannerToolFirstNote`.
-- [x] Remove the aims ledger, the todo-as-memory rows, and the pendant room frames (`[room]`, avatar, backdrop, theme) from the default prompt. They are the crane’s household. They are not the CLI runner. Done; see *Cut the household from the contract* in [the work list](#8-work-list).
-- [x] Drop Gemini thought-signature handling unless that provider is still on the socket. One socket, the local one. Dropped: Gemini isn't for this repo.
-- [x] Re-read every fixture that was green on Flash. Retarget it at the pinned model. A miss is a sentence to shorten, not an expectation to loosen. The Flash fixtures were deleted with the assistant; the coding set (`27`–`30`) was written against the pinned model.
+In order. Phases 1 and 2 are this repo with no server change. Phase 3 is
+`fs-mcp`, with the request text in [mcp_todo.md](mcp_todo.md). Phase 4 is
+the stamp and the release.
 
-## 6. Do not bring these over from goose
+### 1. Make the gate see the gap (this repo)
 
-Each one is an extra completion, a second model, or a vague model id.
+The four fixtures are on disk and pass `TestEvalFixtures_WellFormed`. The
+first live reading, fs-mcp 0.0.6 through `latest`, host at the state of
+phase 2 below:
 
-- [x] No tool shim and no interpreter model (`mistral-nemo`, `qwen2.5:3b`, or a local second GGUF).
-- [x] No session-title completion on the first turns.
-- [x] No auto-compaction that asks the model to summarize the history. `session.LLMSummarizer` is gone; trimmed turns are dropped. See *The summarizer decision* in [the work list](#8-work-list).
-- [x] No per-tool-pair summarizer.
-- [x] No Smart Approve judge call, and no adversary-inspector completion.
-- [x] No skills directory, no subagents, no inbound port, no control UI.
-- [x] No name repair that only accepts an exact rewrite of `extension__tool` and then pastes the full tool list back into the next prompt.
-- [x] No live test that skips unless a host env var is set, and no CI that never sets it. The golden stays on every push. The live eval is the release gate, and it names the model. `TestEval_Live` fails without `LLM_*`, so `eval.yml` and the release go red without a model.
+```sh
+rm -rf /tmp/george-eval-mcp   # so the eval fetches fs-mcp 0.0.6
+make integration-test EVAL_ARGS='-eval.n=3 -eval.only=long_file_edit,append_section,unnamed_file,check_fails_first'
+```
 
-## Done when
+| Fixture | Pass | Wall | Note |
+| --- | --- | --- | --- |
+| `long_file_edit` | 3/3 | 82s | three-page file, edit in page three |
+| `append_section` | 3/3 | 135s | the edit that failed in the session that started this |
+| `unnamed_file` | 3/3 | 36s | found `greet.go` without being told |
+| `check_fails_first` | 1/3 | 55s | one fixture bug, one real miss; both below |
 
-- [x] `george` on a fresh tree talks stdio and calls the pinned local model.
-- [x] The live log prints that full model id.
-- [x] The mangled-name fixture passes on that model, every run. `mangled_names` 5/5 at `-eval.n=5`.
-- [x] A long tool session still answers after older rounds have been marked down, and the process log shows no extra completion for those markers. Ten tasks in one session: 21 `model call` lines for 21 rounds, the seven-round turn peaked at 8.5k prompt tokens, and the last task recalled the first word for word.
-- [x] `sqlite3` on the memory file shows rows, and the repo has no embedding dependency. `sqlite3 george.db "select scope, kind, subject, content from memory"` shows the `fact` row with its repo scope; `go.mod` has no embedding or vector module.
+12 runs, mean 5.6 rounds, 28.9k prompt / 329 completion tokens a turn, 7
+runs over their round budget. The budgets were guesses; the cost note is
+not a failure, and the per-run lines are what the next run should keep.
 
-## 7. Coding tools
+- [x] **`39_long_file_edit`.** A 205-line, 19k-char markdown workspace
+  (three `fs` pages), with `’`, `—`, backticks, and one 3,000-char table
+  row. Task: change one sentence in the third page. Live `fs`.
+  `expect.files` on the new sentence, `files_not` on the old one, read
+  before patch. Budget 5. Baseline 3/3.
+- [x] **`40_append_section`.** Same file without that section. Task: add a
+  `## Update path` section at the end with two given lines. `files` is
+  anchored at end of file (`\z`); `files_not` fails a section that
+  landed above another heading. Budget 4. Baseline 3/3.
+- [x] **`41_unnamed_file`.** `main.go` prints a constant from
+  `internal/greet/greet.go`; the task says "the program prints hi, make
+  it print hello" and names no file. Expects a search or a listing, then
+  the read, then the patch of `greet.go`; `main.go` must not gain
+  `hello`. Budget 5. Baseline 3/3.
+- [x] **`42_check_fails_first`.** Live `fs` and `shell`, a `go.mod`,
+  `calc.go` with two wrong bodies, `calc_test.go` with two failing tests.
+  Task: fix `calc.go` so the tests pass, then run `go test`. Pass when
+  both bodies are fixed, the test file is untouched, and the reply
+  reports a pass. Budget 6. Baseline 1/3:
+  - Run 1 was a fixture bug. It graded `order: fs__file_patch before
+    shell__command_run`, and the model did the right thing: ran `go test`
+    first to see the failures, then patched, then ran it again. The
+    `order` line is gone. What the fixture meant, "a run after the last
+    code change", is now a host rule: `contradiction` sends back a pass
+    claim when `codeWritten && !ranSinceCode`, even if a command ran
+    earlier in the turn. `TestLanes_StaleCheckClaim`.
+  - Run 3 was the real miss. The model read both files, replied "Two bugs
+    in `calc.go`: …" and stopped. No write was tried, no claim was made,
+    so no nudge fired. `lanes.unlanded` has a second branch: the inbound
+    asked for a change (`askedForEdit`: fix, change, add, rename, …),
+    the turn read files and wrote nothing, and the reply neither asks a
+    question nor says no change is needed, so it is sent back once with
+    "a diagnosis is not the change". `TestLanes_UnlandedDiagnosis`.
+  - Check: rerun with
+    `EVAL_ARGS='-eval.n=3 -eval.only=check_fails_first'` and record it
+    here. This is the test-fix-retest loop the loop guard was shaped
+    around, and nothing graded it until now.
 
-Workspace read, patch, git, and shell are MCP binaries. The plan, the server ids, and the tool names are [coding-mcp.md](coding-mcp.md). Nouns are reserved in [mcp-naming.md](mcp-naming.md).
+### 2. Host fixes (this repo)
 
-New repos (`fs-mcp`, `git-mcp`, `shell-mcp`, `github-mcp`). They are not features of this process, and they are not patches to the other plugins under `repos/`.
+- [x] **Offset repair.** In `toolround.go` `repairOffset`: a `fs__file_get`
+  that errors with `offset N is past end`, when this turn's newest paged
+  read of that path said `next offset M`, is run again at `M` and the
+  result opens with one line saying so. Only the error path is rewritten,
+  and only after an earlier page, so a read that was always past the end
+  stays an error. `lanes.noteResult` reads the fs 0.0.6 header (`; next
+  offset M`, `; end`) and the host's own cut marker. Counted as
+  `offset_repair` in `/toolstats`. `TestAgent_OffsetRepair`,
+  `TestLanes_PagedReadContinuation`. Live check still open:
+  `long_file_edit` shows no `offset … is past end` in the log.
+- [x] **One pager.** Measured: an `fs-mcp` 0.0.6 page is bounded by the
+  server (a 20k file came back as 39 numbered lines, 3,175 runes, under
+  the 6,000 cap), so the host's cut never fires on a read with the
+  default `TOOL_RESULT_MAX_CHARS`. The cut stays as a backstop for a
+  smaller cap or an older server, and now reads and writes the server's
+  own header dialect (`range: 1-59 of 184; next offset 60`), so the two
+  pagers say the same thing. `TestTruncate_NewHeaderDialect`.
+- [x] **Unlanded-write nudge, by state not by phrase.** `lanes.unlanded`:
+  a plain reply about to ship, every `fs__file_patch` / `fs__file_create`
+  this turn failed, and the reply does not own it (`couldn't`, `failed`,
+  `did not match`, `nothing written`): one nudge naming the failed calls
+  and their first error line, pointing at `old` exactly as a page showed
+  it or `after_line`. A turn with no write attempt is never nudged.
+  `TestLanes_Unlanded`, `TestAgent_UnlandedWriteNudge`. Live check still
+  open: `pick_an_option` and `append_section` 5/5.
+- [x] **Decide on the console deps.** Kept. `charmbracelet/glamour`,
+  `lipgloss`, `log`, `briandowns/spinner`, `muesli/termenv`, and
+  `lumberjack` are all pure Go: no cgo, no platform-only build tags that
+  drop a feature, Windows handled by the same `x/sys` and `x/term` the
+  tree already pulled. They do not touch the `CGO_ENABLED=0` build on
+  any of the five `.goreleaser.yaml` targets. `x/term` alone would mean
+  writing the spinner, the styles, and the markdown renderer by hand,
+  which is the code this project does not write. Recorded in
+  `architecture.md`'s dependency table. Check: the table and `go.mod`
+  name the same libraries, and
+  `for t in darwin/arm64 windows/amd64; do GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/george; done`
+  is clean. Still to run once on this machine; the release workflow
+  runs the same matrix.
+- [x] **Dangling links.** `coding-agent-plan.md`, `coding-mcp.md`,
+  `fork-cli-agent.md`, and `extra-model-calls.md` are deleted. The links
+  in `readme.md`, `architecture.md`, `design.md`, `mcp.md`,
+  `mcp-naming.md`, and `auth.md` now point at `todo.md`, the readme's
+  Tools table, `design.md#memory`, or `mcp_todo.md`, or the sentence is
+  gone. The two dated reviews keep theirs as a record. Check:
+  `rg 'coding-agent-plan|coding-mcp\.md|fork-cli-agent|extra-model-calls' --glob '*.md'`
+  finds only the reviews and this line. Each server's `AGENTS.md` under
+  `repos/` still links to `george/docs/coding-mcp.md`; that is theirs.
 
-Done: `fs`, `git`, `shell`, and `github` are in the `mcp.toml` that `george init` writes from `examples/mcp.toml.example`. The live eval fetches the real releases and checks the coding catalog before any fixture runs.
+### 3. Server requests (`fs-mcp`)
 
-## 8. Work list
+Written up in [mcp_todo.md](mcp_todo.md) and mirrored in
+`repos/fs-mcp/TODO.md`. `git`, `github`, and `shell` have nothing open.
 
-Each item comes from the code or a live run on `qwen3-coder:30b-a3b-q4_K_M`, the graded model until the switch to `qwen3.6:35b-a3b-coding`. An item is done when its check passes. Writing the code is not enough. The quick ones are first; the big ones are at the bottom, in priority order.
+All six shipped in `fs-mcp` v0.0.6 (released; `latest` serves it). Probed
+against the built binary: `old` with `'` for `’` and `-` for `—` patches
+and says `matched after trimming trailing space and folding quotes and
+dashes`; a miss says `Nearest: line 4: "line four   " (differs at char 8:
+old has "r", file has "u")`; `after_line: 5` appends; a default page of a
+20k file is `range: 1-39 of 230; next offset 40` with numbered lines; a
+past-end read says `(last line 300)`; `T.MD` gets `did you mean t.md?`.
 
-Live gate: `make integration-test EVAL_ARGS='-eval.n=5'` stamps an item done; iterate at `-eval.n=1` to `3`. Last full reading (`-eval.n=5`, real `fs` 0.0.2, household cut, Code section, tool note fixed): `edit_then_check` 4/5, `parallel_reads` 5/5, `parallel_checks` 5/5, `parallel_patches` 0/5, `commit_only_when_asked` 5/5, `stop_when_done` 4/5. After it, the coding deferral cues: `parallel_patches` 0/3, but every run patches; the one miss left is the call line in a rename (see 2b). On `qwen3.6:35b-a3b-coding` with `fs` 0.0.3, `git` 0.0.3, `shell` 0.0.2, and `github` 0.0.3 (`-eval.n=2`): 11 of 12, every fixture 2/2 but `parallel_patches` 1/2. That miss was the fixture: `shell` was canned, so `go test` returned `{}` and the model retried it for 24 rounds. `parallel_patches` now runs `shell` live with a `go.mod` and a budget of 4 rounds (read, patch, test, reply), and scored 3/3. Stamp at `-eval.n=5` on that setup: 28 of 30 (was 23 of 30). `parallel_reads`, `parallel_checks`, `commit_only_when_asked`, and `stop_when_done` 5/5; `edit_then_check` 4/5 (the miss ran `git__status_get` in the same round as the check, not after it); `parallel_patches` 4/5 (one patch call left out `new`; the error showed a valid call and the model fixed it next round, so the two patches missed `same_round`). Every file on disk was right in all 30 runs.
+The gate checks are still to take (the live reading in phase 1 covers
+them): `long_file_edit` 5/5 with no `0 matches`; a corrected patch after
+a miss, not a read; `append_section` 5/5 with one patch per run; no host
+cut on a read; `after_line` values that match a read; no `pick_an_option`
+run ending on "no such file".
 
-### Quick wins
+Run `george tools-fetch` once so the installed binary is 0.0.6 too; the
+one under `~/.local/share/george/bin` was still 0.0.5 when this was
+written.
 
-- [x] **Stale Telegram comments.** Comments in `agent.go`, `spinup_notes.go`, `provider/stream.go`, and `channel/stream.go` still name Telegram, and `websearch` still special-cases the retired `mcp-gemini-google-search` server. Reword or delete them. Check: `rg -i 'telegram|google-search' --type go -g '!*_test.go'` shows only `config.CheckRetired`.
-- [x] **Empty final reply after a tool.** One live run ended with an empty reply after an unasked `memory_store`. Fall back to the last real narration, or to a short "Done." line. Check: a unit test where the last completion is empty. `TestAgent_EmptyFinalAfterTools` covers blank and tag-only finals; a stray `<tool_call>` is stripped inside the loop, so it falls back too.
-- [x] **Repeat-call loop guard.** `TOOL_MAX_ITERATIONS` is 25, so a loop costs about 130k tokens before it's stopped. End the turn with an honest reply when the model makes the same call (same name, same arguments) a second time after the result came back. Check: a unit test, plus the 26-round `edit_then_check` loop ends by round 9. A single repeated call is too strict: test, fix, re-test repeats `shell__command_run`. The guard (`loopguard.go`) fires when the last k rounds repeat the k before them, with the same calls, arguments, and results; the next call is then the landing call with a loop note. A re-run whose result changed is progress. Live: it fired three times in one gate run; the longest `edit_then_check` run was 8 rounds. Not caught: a loop whose arguments keep changing (one `parallel_patches` run searched with new queries until round 24).
-- [x] **Fold vs. the qwen template.** `LLM_SYSTEM_FOLD=auto` kept the agent layout, with system text after the user turn. The template is only `{{ .Prompt }}`; the modelfile says `RENDERER qwen3-coder` (Ollama 0.35.0), so it's rendered in code. A probe settled it: a codeword in a second system message after the user turn changed neither the prompt token count (47 both ways) nor the reply (`NONE`), while the same line in the first system message was read. Only the first system message renders. `auto` now folds like `one`; `many` keeps the old layout. Every gate reading before this ran without the budget warning and the landing note. The wire golden is `testdata/stdio/wire.txt`. On `qwen3.6:35b-a3b-coding` (`RENDERER qwen3.5`) the same probe reads the later system message (38 → 52 prompt tokens, reply `PELICAN`); the gate still runs folded.
-- [x] **The release gate can't be skipped.** `TestEval_Live` skipped without `LLM_*`, and `eval.yml` went green on a fork with no key. It now fails with a message, so the eval job and `release.yml` go red. Checked: `make integration-test` in a copy with no `.env` and no `LLM_*` exits non-zero with that message. Not checked on GitHub.
+### 4. Stamp and release
 
-### Medium
+- [ ] **Full gate at `-eval.n=5`, every fixture 5/5**, on named server
+  versions. The number to beat is 49 of 55. The fixtures that moved last:
+  `least_change` (the model keeps `Subtract` beside the fixed `Add`),
+  `edit_then_check` (a `git__status_get` or `shell__command_run` batched
+  before the read), `parallel_patches` (two patches in separate rounds).
+- [ ] **Pin the graded servers.** `download_tag = "latest"` in
+  `examples/mcp.toml.example` and `testdata/eval/mcp.toml`, and
+  `download.go` checks no checksum. Pin each tag and verify each archive
+  against its release `checksums.txt`. Check: `tools-fetch` refuses a
+  wrong hash, and the gate log names the four versions.
+- [ ] **Input history.** Arrow-key recall across messages on the
+  terminal. `x/term` has none; this is the one place a line-editor
+  import (or a small ring in `console.go`) earns its place. Check: Up at
+  the prompt recalls the last message; piped stdin is unchanged.
 
-- [x] **Fixtures for stopping.** Add `commit_only_when_asked` (the task edits a file; `git__commit_create` fails the run) and `stop_when_done` (the task is answered in one round; any further call fails the run). These give the next two items a number to move. Check: both run at `-eval.n=5` and a baseline is recorded here. Written: `31_commit_only_when_asked` (live `fs`, canned git, `git__commit_create` in `tools_not_called`) and `32_stop_when_done` (one canned read, new `expect.max_tool_calls: 1` so any further call fails). `TestEvalFixtures_WellFormed`, `TestCheckEval_MaxToolCalls`, and lint pass. Baseline at `-eval.n=5` (full gate, the contract with the first Code section): `commit_only_when_asked` 5/5, `stop_when_done` 5/5. After the household cut, at `-eval.n=3`: 3/3 and 3/3.
-- [x] **Cut the household from the contract.** `contract.md` teaches `[aims]`, `[todo]`, `[hours]`, `todo/`, `follow/`, a dentist example, and Memory hygiene that tells it to store things. `summary.go` mentions aims, and `host.go` has the `avatar_get` path. Cut one piece per change, each under the live gate, then add the coding memory lines (repo versus you, repo files first). Check: the gate rate holds or rises after every cut. The contract part is done in two cuts. Cut 1 removed what no code backs: the calendar and cron rules, the scoop example, the `[hours]` `[aims]` `[todo]` `[loops]` `[wakes]` `[wait]` `[silent]` line, `/tools`, injury, and the "Anything else I can do or add for you?" closer. Cut 2 made Memory hygiene two layers: `self_note` for voice, and `memory_store` for `preference` (how they work) and `fact` (how the repo works, e.g. `cmd/test`). The goal example was `edit_then_check`'s inbound word for word, so the model replayed it on `stop_when_done`; it's now a `notes.md` edit and a `config.yml` read-only question. Readings, passing runs out of 12 at `-eval.n=2`: before 9, after cut 1 8, with the new examples 7. After cut 2, at `-eval.n=3`: 13 of 18, with `edit_then_check` 0/3 (it patches before reading, since the inbound says what's in the file). `summary.go` no longer mentions aims, and the `host.go` `avatar_get` comment is gone. Two harness fixes got `edit_then_check` back. The recency-weighted `toolNarrationNote` in `agent.go` gave "Reading the file and checking git status" as its batch example, the exact wrong batch; it's now "Reading a.go and b.go", plus the chain (a patch needs the read, a check needs the patch, git status needs the check). The contract line "Writes you already know you'll make ride in that first batch" let the model batch a patch whose content the task already told it; that line is gone. The goal example is a structural twin (`README.md` v1 → v2, lint, git status, one tool per round). `edit_then_check` went from 0/3 to 3/3. Stamped at `-eval.n=5`: 23 of 30 runs, against 13 of 18 (72%) right after the cut.
-- [ ] **Teach it what "done" is.** This model ignores abstract rules ("least change, DRY, KISS, TDD") or copies them back as text; two abstract persona rewrites scored 0/10. Add concrete lines to `contract.md`, one at a time, keeping each only if the rate goes up:
-  - Least change: patch only the lines the task needs, and don't reformat or rename around them.
-  - KISS and DRY: reuse what the repo already has before writing new code.
-  - Expand, don't add: grow the function or type that already does the job (a new field, an optional parameter) instead of writing a near-copy beside it. Pass an options object, not a long parameter list. Don't merge unrelated jobs into one god function either.
-  - TDD: when the task adds behaviour, add or change a test first and run it.
-  - Done: the asked change is made, and the repo's test and lint commands pass. Then reply in one or two lines and stop.
-  - Git is the human's lane: never commit, stage, push, branch, or open a PR unless they asked this turn. Looking (`git__status_get`, `git__diff_get`) is fine. `memory_store` and `self_note` are the agent's own tools and are not on this list.
-  - Check: every fixture at 5/5.
-  - In `contract.md` now (a `## Code` section): **Done**, reworded to "the check they asked for ran (none named: the repo's test and lint). Then one or two lines naming what changed, and stop." The first wording, "test and lint pass", made `edit_then_check` loop on a repo with neither (2/5). Also **Git is their lane** (unasked commit and stage went from 2/5 runs to rare; since replaced by the host refusal and removed), and **A rename changes every use**: every line with the old name is a `-`/`+` pair. That one got `parallel_patches` reading and patching in one batch and fixed the missed `Hello("bob")` call in 2 of 3 runs.
-  - Coding deferrals: `defersPendingWork` only knew household phrases ("give me a moment"), so a turn could end on "Let me first patch a.go, then a_test.go." after one read. It now also catches "let me first/now/patch/run/…", "I'll now/patch/run the…", and "next, I'll", but not "let me know" (`TestDefersPendingWork_CodingCues`). Live: three of five `parallel_patches` runs ended that way before; none in three runs after.
-  - Tried and out for now: Least change, Expand, and test first. With them in, `parallel_patches` was 0/5 twice; without them it was 1 to 2/5. No fixture measures them yet, so they need one, e.g. a task where expanding an existing function with an optional parameter passes and a near-copy beside it fails. Measured: `34_expand_dont_copy` (give `Retry` 5 attempts for some callers; new `expect.files_not` fails a second `fn()` call in `retry.go`) is 5/5 at `-eval.n=5` with no Expand line, every run growing `Retry` with an options parameter. The line isn't needed, so it stays out. The runs take 5 to 11 rounds against a budget of 4, mostly `fs__file_search` for other callers first.
-  - **Least change: in.** Fixture `36_least_change` ("Add in calc.go subtracts. Make it add."; `calc.go` must end as it was with `-` made `+`, `calc_test.go` unchanged). Baseline 2/5: the model keeps the old behaviour as a new `Subtract` or `Sub` beside the fixed `Add`. The line "patch only the lines the task needs. A fix replaces the wrong line; it does not keep the old behaviour under a new name, add a function nobody asked for, reformat, or rename around it" took it to 4/5, then 3/5 in the full gate. Two passing replies still offer to add `Subtract`.
-  - **KISS and DRY: out.** `34_expand_dont_copy` already scores 5/5 without a line, so there is no rate for one to raise.
-  - **TDD: out.** Fixture (removed, since no line moves it): "Add a Mul function to calc.go that multiplies two ints." with live fs and shell and a `go.mod`; pass when `calc.go` has `func Mul(a, b int) int`, `calc_test.go` has a `Test…` func calling `Mul(`, and `shell__command_run` ran `go test`. Baseline 0/5: no run writes a test, and three of five run `go test` and report the old test passing. The line "New behaviour comes with its test… round 1 reads the file and its `_test` file, round 2 patches both, then run the tests. A fix to existing code needs no new test" left it at 0/5. With the line, no run ran `go test`, two asked "want me to run it?", and `least_change` dropped to 3/5. It needs a host-side fix (for example, a nudge when a patch adds a func and no `_test` file was written this turn), not a contract line.
-  - **TDD and the check: in, as code.** `lanes.go` `unfinished` runs before a plain reply ships, after the claim check. A write to a code file (by extension) that declares a function its old text didn't (Go `func`, `def`, `function`, `fn`; `old`/`new`, `diff` `+`/`-` lines, or a created `body`) with no test file written this turn gets "You added Mul but wrote no test this turn…", up to twice. A code write with no `shell__command_run` after it, when a command tool is published, gets "Run the repo's test and lint now… then reply naming what changed and what they returned", once. Text files (`greet.txt`, `notes.md`) never trigger either. `37_test_with_behaviour` is back: 0/5 before, then 4, 5, 2, 4, and 3 of 5 across five runs with the nudge. Every failing run since the nudge is a tool call with its arguments missing (below). Longer test-nudge wording ("…then reply naming what changed…") dropped it to 2/5, with the model running the old tests instead of writing one, so that nudge keeps the short text. The check nudge's "naming what changed" got `parallel_patches` back to 5/5 after one reply came back without `Greet`.
-  - Full gate at `-eval.n=5` with both nudges (one test nudge, before the wording fixes): 48 of 55. 5/5: `edit_then_check`, `parallel_reads`, `commit_only_when_asked`, `stop_when_done`, `expand_dont_copy`, `no_false_check_claim`, `test_with_behaviour`. `parallel_checks` 4/5, `parallel_patches` 4/5 (fixed since, 5/5 alone), `mangled_names` 3/5, `least_change` 2/5 (two runs still add `Subtract`, then the test nudge has the model test it; one provider empty reply). Mean rounds went from 3.74 to 4.71; the nudges cost rounds.
-  - Full gate at `-eval.n=5` with the Least change line, the host refusals, and the claim check: 45 of 50. 5/5: `parallel_reads`, `parallel_checks`, `parallel_patches`, `commit_only_when_asked`, `stop_when_done`, `no_false_check_claim`. `edit_then_check` 4/5 (one run read git status in the first batch with the file). `expand_dont_copy` 4/5 (calls with an empty `path` until the loop guard landed). `mangled_names` 3/5 (the forced retry after the near miss came back with no path or the wrong file); 5/5 when run again alone. `least_change` 3/5. The check, every fixture at 5/5, is not met.
-- [x] **The summarizer decision.** `session.LLMSummarizer` spent a completion to fold trimmed turns into a summary, which section 6 forbids. Either drop it (trimmed turns are gone, and the `bound.go` markers already cover tool rounds) or record why this one completion is allowed and strike the section 6 line. Check: a long session's log shows no summary completion, or the decision is written here. Dropped: `LLMSummarizer`, its prompt, the fold hook, and `selfnote.GraduateVoice` (it only ran on a fold) are deleted, and a trim just deletes the oldest rows. The `session.summary` column and its readers (`[session summary]`, `/tokens`, parking facts on `/reset`) stay, so an older `george.db` still loads; nothing writes it now. Checked by `TestAgent_Handle_TrimSpendsNoCompletion`: eight turns against a 4-message cap make eight completions, history is trimmed to 4, and the summary stays empty. Not checked on a live model.
+## Not doing
 
-### Big, in priority order
+Recorded so the next pass does not retry them.
 
-- [x] **1. One session and one memory per repo (plan phase 7).** george now runs in any repo, but every repo still shares one session and one memory pool, so repo A's conversation and facts leak into repo B. Add the repo id (from the root), make it the session id, add a scope column to memory (repo or you), and add the memory move. Check: `george` in two repos resumes two different conversations, and a repo fact stored in A is not recalled in B. Done: `repoID` in `cmd/george/root.go` is the normalized `origin` URL from the git config (`gopkg.in/ini.v1`, following a worktree's `commondir`), else the root. It is the stdio session id and `memory.Builtin.Repo`. `memory` gets `scope TEXT NOT NULL DEFAULT 'user'`, added to an existing `george.db` on open. Scope follows the kind, not a new tool argument: `preference` and `person` are `user`; `fact`, `insight`, and `episode` are the repo's. Reads take `user` plus this repo; supersede-by-subject stays inside one scope. Rows from before the column are `user`, so they still show everywhere. Checked by `TestBuiltin_RepoScope`, `TestBuiltin_OldDBGetsScope`, `TestRepoID_*`, `TestNormalizeRemote_SpellingsAgree`, `TestChannel_SessionIDIsTheRepo`, and a live run in a fresh `HOME`. Repo A stored `cmd/test` as a `github.com/me/repo-a` row. Repo B answered "I don't have a memory of the test command". A again resumed its own conversation and knew the command. `session_message` shows both session ids. The memory move is `/memory move <old repo id>`: it rescopes the old id's rows to this repo and supersedes the older of any duplicate kind and subject. `/memstats` lists the scopes and marks this repo's. Checked by `TestBuiltin_MoveAfterRename`, `TestAgent_MemoryMove`, and a live run that renamed repo A's remote and moved its rows.
-- [x] **2. Real `fs` in the eval.** The canned `fs__file_get` returns its script whatever was patched, so the model re-reads, sees no change, and patches again (19- and 26-round loops). Run the patch fixtures against the real `fs` server and host on a temporary repo seeded from the fixture. Check: `parallel_patches` stops re-reading after the patch, and a malformed diff fails the run. Done: a fixture's `workspace` seeds a temp dir, `live` servers boot rooted there through the real host (so names go through `Host.resolve`), and `expect.files` greps what landed. `edit_then_check` runs live `fs` and `shell`; `parallel_patches` runs live `fs`. Checked: a scripted malformed diff with a "renamed both" reply fails on `files` against the real binary (run before every gate), and when both patches land the model doesn't re-read. Reading at `-eval.n=5`: `edit_then_check` 3/5 (an unasked `self_note`, git status batched early), `parallel_patches` 0/5. The loops that remain are real; see *Hunk header counts*.
-- [x] **2b. Replace-all in `fs-mcp` (owned by `fs-mcp`).** With the headers fixed, the remaining `parallel_patches` miss is the rename itself. The model renames `func TestHello` but leaves `if Hello("bob")` as a context line. Contract lines (every line with the old name is a `-`/`+` pair) fixed it in 2 of 3 runs once, then not; a concrete `Load → Open` diff example made it worse (0/3) and was reverted. A tool that replaces every occurrence of an exact string in one file (old, new, optional count) makes a rename one call per file with nothing to track. Check: `parallel_patches` 5/5 with that tool and no contract change. Shipped as `file_patch` `old`/`new` in `fs-mcp` 0.0.3; `qwen3.6:35b-a3b-coding` uses it for the rename, 3/3 at `-eval.n=3` and 4/5 at `-eval.n=5`; the one miss was a call without `new`, fixed a round later. Stamped on `fs-mcp` 0.0.4: `parallel_patches` 5/5 at `-eval.n=5`, every run 4 rounds (read both, patch both, test, reply), no contract change.
-- [x] **2a. Hunk header counts (owned by `fs-mcp`).** Fixed in `fs-mcp` v0.0.2: no `fragment contains no changes` in three gate logs since. Patch errors now are real context mismatches (`hunk does not match`). With the real `fs`, the model's diffs are rejected most runs: `gitdiff: line 6: fragment contains no changes`. It writes `@@ -1,2 +1,2 @@` over a hunk with three old lines, re-reads, and sends the same header again until the loop guard lands it. A 30B model can't count hunk lines. The fix belongs in `fs-mcp`, not here: recount hunk headers from the body before applying, or offer an exact-string replace. Check: `parallel_patches` 5/5 on the next `fs-mcp` release with no change in this repo.
-- [x] **3. Mangled-name live fixture.** Needs item 2, because the canned tools don't go through `Host.resolve`. The host side is done (see below). Give the fixture an inbound that names a tool the wrong way ("run fs.file_get on a.go") and expect the real `fs__file_get` to run. Check: 5/5, and `/toolstats` shows the repair. Written: `33_mangled_names` scripts one batch of `fs.file_get` (a.txt), `fs-file_get` (b.txt), and the near miss `fs__file_read` (c.txt) against live `fs`, grades the three codes in the reply, and checks `/toolstats` for `prefix_alias=2` or more (new `expect.toolstats_regex`). The harness now sends a name no canned tool owns to the live host, as production does. Every run so far repaired both names and retried the near miss with `fs__file_get`. Readings at `-eval.n=5`: 4/5, then 4/5 after the inbound stopped saying "code" (one run made up source snippets). The miss left: the reply said `alice-1` for a.txt after the repaired call had returned `alpha-7`. The transcript keeps the mangled name on that call, which matches no published tool, so the model may not tie the result to it. A retry also sent `/c.txt` and got `path escapes workspace`; that one is `fs-mcp` item 8 in [mcp_todo.md](mcp_todo.md), shipped in 0.0.5. Stamped on `fs` 0.0.5, `git` 0.0.3, `shell` 0.0.2, `github` 0.0.3: 5/5 at `-eval.n=5`, every run 3 rounds (the scripted batch, the retry as `fs__file_get`, the reply), no `alice-1`-style misreport. If that misreport comes back, echo the resolved name on the assistant's tool call.
-- [x] **4. Input on stdio (plan phase 8).** A line editor (import one, such as `chzyer/readline`) with bracketed paste, so a paste is one message. Ctrl-C cancels the turn, not the process. Delete `coalesce.go`. Check: a 40-line paste is one turn, and Ctrl-C mid-turn returns to the prompt. Done with `golang.org/x/term` (the readline forks don't do bracketed paste): on a terminal, pasted lines collect under a `…` prompt and the next Enter sends them with anything typed after. The terminal is raw only while you type, so Ctrl-C or Ctrl-D at the prompt exits, and Ctrl-C during a turn is a SIGINT that cancels that turn and prints `cancelled`. `run.go` no longer exits on SIGINT, and MCP children start in their own process group so the Ctrl-C doesn't kill them. Piped stdin stays one message per line, so scripted slash commands still work. `coalesce.go` was already gone. Checked by `TestReadMessage_FortyLinePasteIsOneMessage`, `TestReadMessage_TypedAfterPasteJoins`, `TestReadMessage_CtrlCAtPromptIsEOF`, `TestChannel_InterruptCancelsTurnOnly`, a Windows cross-build, and a live run on a pseudo-terminal: a 40-line paste was one turn that answered `40`, Ctrl-C mid-essay printed `cancelled` and returned to the prompt, the next turn ran `shell__command_run`, and Ctrl-C at the prompt exited 0 with no MCP process left.
-- [x] **5. Context budget (plan phase 10).** Fit history, contract, schemas, and tool results into the model's window, together with the summarizer decision above. Check: a long session still answers after older rounds are marked down, with no extra completion in the log. Done: `HISTORY_MAX_TOKENS` is `8000` (was `32000`, about 42k real tokens, more than the window). `turn perf` gains `peak_prompt_tokens`, the largest single round, which is what has to fit. The reading and the arithmetic are in [coding-agent-plan.md](coding-agent-plan.md#defaults-that-fight-a-32k-window). `TOOL_RESULT_MAX_CHARS` stays `6000`. The long session in item 7 is the check.
-- [x] **6. Docs (plan phase 12).** Finish the CLI rewrite of `docs/architecture.md`, `docs/design.md`, and `docs/deploy-native.md`, and drop the assistant-era docs that no longer describe george. Check: no doc tells you to run a daemon, a container, or a chat channel. Done: the three docs were rewritten for the CLI. `george auth` is gone from the code (`internal/mcp/auth.go`, the `auth_*` manifest fields, `ServerStatus.Auth`; an old manifest with those keys still loads, `TestHost_CallSkippedServerClassified`), CI no longer publishes `docs/oauth-catch` and removes it from `gh-pages`, the assistant-plugin env lines are out of `.env.example`, and the readme badges point at `shotah/ai-george`. `rg -i 'docker|daemon|container|telegram|discord|slack'` over the docs finds only "removed" lines, naming history, and the dated fork note.
-- [x] **7. The last two "done when" lines.** Run a long live session to show the older-round markers working with no extra completion, and open the memory file with `sqlite3`. Run both by hand after items 1 and 5, then tick them above. Done; see the two lines above. The session also found a false report: in the task "add a test … then run go test", the first `old`/`new` patch replaced the next test's header line and orphaned its body, the model then read its own new test as one that was already there, replied "No code changed", and said `go test ./...` passes without running it. The file did not compile. See *A reply that claims a check it didn't run*.
-- [x] **Host refusals for the two costly rules (from both reviews).** "The patch waits on the read" and "never commit or stage unless asked" are contract sentences the model sometimes skips. The host sees every call: refuse `fs__file_patch` on a path with no `fs__file_get` of it this turn, and `git__commit_create` / `git__stage_update` unless the user line asks for a commit or stage, returning the refusal as the tool result. Check: `edit_then_check` and `commit_only_when_asked` hold 5/5 with the two contract lines removed.
-  - Done in `internal/agent/lanes.go`. The read set is taken at the start of each round, so a read and a patch in one batch refuse the patch. Names match by suffix, so a mangled `fs.file_patch` is held too. A patch counts as a read of its own path. A refused call never reaches the tool, so the eval recorder does not list it; `tool call blocked` in the log is where to count them.
-  - Both contract lines removed. `edit_then_check` 5/5 and `commit_only_when_asked` 5/5; no model call was refused in either run. The `bad diff fails the run` self-test now reads before it patches, so its malformed diff still reaches the real fs.
-- [x] **Assistant-era weight (from both reviews).** `budget.go` and `budgetstore.go` (per-server vendor quotas), the `/brief` `/short` `/off` holds, `Host.CallRaw` for the gone watch poller, and the `"query body battery"` cue in `promisesToolCall`. Delete what four `force = true` coding servers don't use. Check: tests and lint pass, and the gate rate holds.
-  - Deleted: the budget files and manifest fields, `auth.go` and the auth fields, `CallRaw`, the three hold commands and `parseEnableHoldCommand`, and the cue. `mcp_enable` and the idle drop for servers without `force` stay. `mcpenable.SourceHuman` and its store branch are left; nothing sets them now.
-  - Tests, both lint runs, and the Windows build pass. Full gate after the cut at `-eval.n=5`: 45 of 50 runs, against 23 of 30 at the last stamp.
-- [x] **A reply that claims a check it didn't run.** From item 7's session. The landing reply said "`go test ./...` passes (exit code 0)" in a turn with no `shell__command_run`, and "No code changed" after a successful `fs__file_patch`. The host knows both. Check: a fixture where the patch lands and the canned check is never asked for, graded on `reply_not_regex` for a pass claim; then a host-side fix (a nudge when the reply claims a run or no change that the turn's calls contradict) moves it to 5/5.
-  - Fixture `35_no_false_check_claim`: live fs and shell, a real `go.mod`, no check named. A fresh session never claimed a run (5/5 at baseline). Two earlier turns that each ended "`go test ./...` passes" brought it back: 2/5, and three of those runs made no tool call at all and copied the line.
-  - Fix in `lanes.go` `contradiction`, called before a plain reply ships. It nudges on a check result with no command run, a change claim ("fixed", "now returns") with nothing written and no command run, or "no change" after a write landed. Negated forms ("haven't run", "not fixed") hold. Up to two claim nudges a turn, apart from the one theater nudge, since the model that patches after the first nudge often claims the check on the second reply. 5/5: every run reads, patches, runs `go test ./...`, then reports. Four runs paid one extra round for the nudge.
-- [x] **Tool calls with their arguments missing.** The most common live failure now. Later in a turn the model sends `fs__file_get {}`, `shell__command_run {}`, or `fs__file_patch {"path":"calc_test.go"}` with no `old`/`new`, gets "path is required" or "command is required", and sends the same thing again until the repeat guard lands the turn. Seen in `test_with_behaviour`, `expand_dont_copy`, `least_change`, and `mangled_names` (there a text-salvaged call came back as `{"content": "invalid JSON"}`). Find out first whether the model sends them empty or the provider or salvage path drops them: log the raw `arguments` string on a "required" error. Check: a fixture or replay that reproduces it, then a fix that gets those runs past it.
-  - Cause: our own history bounding. `bound.go` collapsed tool results older than the last two rounds and also stubbed those calls' arguments to `{}`, so from round 4 on the model saw its own past calls as `fs__file_get {}` and copied them. Across every eval log from the night, the empty calls by round: rounds 1 to 3 had only `git__status_get` and `git__diff_get`, which take no arguments; round 4 on had 55 broken ones, and every path-only patch was round 6 or later. The provider stream and salvage paths were fine.
-  - Fix: old results still collapse to a marker; arguments always stay whole. A clipped or path-only stub was ruled out, since the model would copy that too, and a copied clipped `new` writes garbage where `{}` only errors. `TestCollapse_OldArgsStayWhole` and the two window tests now require whole arguments.
-  - Full gate at `-eval.n=5` after: 49 of 55, and no broken empty call in any round (the only empty ones are `git__status_get`). One path-only patch in round 2, before any collapse. Mean rounds 4.71 to 4.40, mean prompt 19.8k to 19.1k: whole arguments cost less than the retries they stop. 5/5: `parallel_reads`, `parallel_checks`, `commit_only_when_asked`, `stop_when_done`, `mangled_names`, `no_false_check_claim`. 4/5: `edit_then_check` (a `shell__command_run` before the read), `parallel_patches` (the two patches in separate rounds), `expand_dont_copy`, `test_with_behaviour`. 3/5: `least_change` (`Subtract` again).
-  - Seen in the same gate, not fixed here. `expand_dont_copy` run 3: an `fs__file_patch` with `new` and no `old` replaced all of `retry_test.go` and lost `TestRetry_StopsAtThree`; whether `fs` should treat a patch with no `old` as a whole-file write is a question for the fs-mcp repo. `test_with_behaviour` run 3: a diff hunk failed to match, the `old`/`new` retry replaced `Add`'s body with `Mul`, and the turn ended on "Let me rewrite the file correctly." when the repeat guard landed it.
-- [ ] **A picked option that never lands.** From a live session: the model drafted a readme section, offered "(a) insert this above Get started", the human typed `a`, and the reply said "I inserted it right before Get started" after two reads and no write. The edit-claim check only knew "fixed", "patched", "renamed", and "now returns"; it now also catches "inserted", "appended", and "added/wrote/updated/edited … to `file.ext`". A bare "I've added a note" stays prose (`TestAgent_Handle_LongEssayWithAddedPhraseIsNotNudged`). Fixture `38_pick_an_option` replays the history and passes when `## Still on the radar` lands in `readme.md`: 3/5. Check: 5/5. The two misses are not the false claim:
-  - A reply that announces the work and stops ("### Adding … and inserting before Get started") after the read. `defersPendingWork` knows "let me …" and "I'll …", not an `-ing` heading.
-  - `README.md` asked for, `readme.md` on disk: every run tries `README.md` first, and one gave up on "no such file" and asked for a paste. A case-insensitive match or a hint naming the near file is the `fs-mcp` repo's call.
-  - Placement is not graded: with the regex `## Still on the radar.*## Get started`, most runs wrote the section under Get started instead of above it.
-- [ ] **Reads that don't survive to the patch.** A live "review the readme and update it" turn made 7 reads, 2 searches, and 3 edits (2 failed). The readme is 9.3k chars and `TOOL_RESULT_MAX_CHARS` is 6000, so a read is always cut, and the cut left fs's `range: 1-199 of 199` header saying the whole file came back: the model asked for line 200 and missed. Then the round window collapsed the head read before the patch in round 4, so `old` came from memory and matched nothing.
-  - `mcp.Truncate` now cuts an fs read at a whole line, rewrites the header to what is shown, and ends "lines 1-130 of 199 shown; read again with offset 131 for the rest" (`TestTruncate_FileReadSaysWhereToGoOn`).
-  - `bound.go` keeps the newest good read of each file and page whole past the window, up to 4, until a good write to that file lands (`TestCollapse_NewestReadOfAFileStays`).
-  - A/B on the same binary with both off, fresh session per run. The review prompt (the model mostly found nothing to change), four runs each: failed reads past the `README.md` miss went from 0, 8, 1, 1 to 1, 0, 0, 0, and every new run read the whole file in two pages. An edit prompt (a section after Get started, a line at the end), three each: old 6, 7, 6 reads with a failed edit every run; new 3, 3, 12 reads with one failed edit. The 12 was a patch that misquoted text both pinned pages showed, then a hunt with small reads. fs's "0 matches for old" names no near line; a hint there is the `fs-mcp` repo's call.
-  - Check: the full gate holds.
-  - Seen after, on `docs/todo.md` (184 lines, 46k chars): the cut said "lines 1-59 of 184 shown; read again with offset 60", and the model asked for offset 200 anyway, the next page at fs's default `limit` of 200. Not fixed: when a read past the end follows a cut, the host could answer with the offset the cut gave. The two patches that followed missed on lines of up to 3,000 chars. The turn ended on "I'll append the new section after the last line." with nothing written; `defersPendingWork` knows "I'll now/patch/run the…", not "I'll append/add/insert/update".
-
-### After release
-
-Not on the path to the first release. The four servers are our own repos, not outside dependencies, and `latest` lets a server fix reach the gate with no change here.
-
-- [ ] **Pin the graded servers (from both reviews).** `download_tag = "latest"` in `examples/mcp.toml.example` and `testdata/eval/mcp.toml`, and `download.go` checks no checksum, so the next `fs-mcp` release changes what the gate grades with no change here. Pin each tag and check each archive against its release `checksums.txt`. Check: `tools-fetch` refuses an archive whose hash is wrong, and the gate log names the four versions.
-
-### Done
-
-- [x] **george runs in any repo.** The container files and `deploy/` are gone. `cmd/george/root.go` sets `GEORGE_ROOT` to the git toplevel of the cwd (or the cwd) unless set, and server `args` expand `${VAR}`. `internal/config/paths.go` (`adrg/xdg`) puts config in `GEORGE_CONFIG_DIR` or `~/.config/george` and data in `~/.local/share/george`. `config.Load` reads `~/.config/george/env` with `godotenv`; the process env wins and a retired variable still fails boot. `george init` writes `env` (0600), `mcp.toml`, `PERSONA.md`, and `SELF.md`; `tools-fetch` installs into `~/.local/share/george/bin`, which george puts first on `PATH`. Checked by unit tests and a real run in a fresh `HOME` from a non-repo dir and from a repo subdirectory.
-- [x] **A wrong model name says so.** Refusing family tags was dropped; which model to run is the user's call. A 404 that names the model reads `model "bad_name" was not found at LLM_BASE_URL; set LLM_MODEL to one the server has (Ollama: ollama list)`. Checked by `TestClient_ModelNotFound`, `TestClient_NotFoundWithoutModelStaysRaw`, and a live run.
-- [x] **Mangled names in the host.** `Host.resolve` repairs a wrong separator (`fs.file_get`, `git_status_get`, `shell-command_run`) and counts it as `prefix_alias`. `TestHost_MangledCodingToolNames` covers that plus a bare name, an invented prefix, `functions.fs__file_get`, and a near miss.
-- [x] **Gemini is gone.** Not for this repo. `ToolCall.Raw`, the thought-signature echo, and the skip token are deleted; tool calls are re-encoded from id, name, and arguments. `LLM_SYSTEM_FOLD=auto` no longer looks at the model name (`one` stays for chat templates that need it). The env templates no longer offer Gemini. Checked: `rg thought_signature` is empty outside the docs, the request goldens are unchanged, and a live run completed multi-round tool turns.
+- Abstract contract lines (least change as a principle, KISS, DRY, TDD as
+  prose, "expand, don't add"). Two rewrites scored 0/10; concrete lines
+  with a tool name are what move this model, and the host refusals and
+  nudges moved more than any line did. `least_change` keeps its one
+  concrete line.
+- A summarizer completion, a tool-shim model, a second provider, a
+  sandbox, an approval prompt. The design non-goals stand.
+- Whole-file write through `file_patch` with no `old`. The refusal is
+  right; it lost a test once.
+- Shell as the default write path. Above.

@@ -2,9 +2,8 @@
 
 george has no auth flow of its own. The assistant build had a chat `/auth`
 command, a `george auth <server>` subcommand, and a GitHub Pages catch page
-for OAuth redirects. All three were removed with the chat channels
-([coding-agent-plan.md](coding-agent-plan.md#what-comes-out)), and CI no
-longer publishes the catch page.
+for OAuth redirects. All three were removed with the chat channels, and CI
+no longer publishes the catch page.
 
 What the four coding servers need:
 

@@ -181,6 +181,167 @@ func TestLanes_Unfinished(t *testing.T) {
 	}
 }
 
+func TestLanes_PagedReadContinuation(t *testing.T) {
+	l := lanesFrom(withTurnLanes(context.Background(), "edit the readme"))
+	get := func(path string) json.RawMessage { return view("", path).args }
+
+	if _, ok := l.continuation(get("readme.md")); ok {
+		t.Fatal("no read yet")
+	}
+	// fs-mcp 0.0.6 page.
+	l.noteResult("fs__file_get", get("readme.md"), "range: 1-39 of 230; next offset 40\n1: a\n")
+	if m, ok := l.continuation(get("./readme.md")); !ok || m.last != 39 || m.next != 40 {
+		t.Fatalf("after page 1: %+v %v", m, ok)
+	}
+	// The host's own cut of an older server's read.
+	l.noteResult("fs__file_get", get("docs/todo.md"), "range: 1-59 of 184\nx\n…[cut at 6000 chars: lines 1-59 of 184 shown; read again with offset 60 for the rest]")
+	if m, ok := l.continuation(get("docs/todo.md")); !ok || m.next != 60 {
+		t.Fatalf("host cut: %+v %v", m, ok)
+	}
+	// The last page ends the continuation.
+	l.noteResult("fs__file_get", get("readme.md"), "range: 40-230 of 230; end\n40: b\n")
+	if _, ok := l.continuation(get("readme.md")); ok {
+		t.Fatal("end page still continues")
+	}
+	// A header-less result (a short file) is not a page.
+	l.noteResult("fs__file_get", get("a.go"), "package a\n")
+	if _, ok := l.continuation(get("a.go")); ok {
+		t.Fatal("plain read continues")
+	}
+	var none *turnLanes
+	none.noteResult("fs__file_get", get("a.go"), "range: 1-2 of 9; next offset 3\n")
+	if _, ok := none.continuation(get("a.go")); ok {
+		t.Fatal("nil lanes")
+	}
+}
+
+func TestLanes_Unlanded(t *testing.T) {
+	fresh := func() *turnLanes { return lanesFrom(withTurnLanes(context.Background(), "add the section")) }
+	patch := func(path string) json.RawMessage { return view("", path).args }
+	miss := errors.New("0 matches for old in readme.md; nothing written. Nearest: line 57")
+
+	// A read-only turn that declines the edit is never nudged here.
+	l := fresh()
+	l.record("fs__file_get", patch("readme.md"))
+	if got := l.unlanded("It covers install and usage; nothing to add."); got != "" {
+		t.Fatalf("no attempt: %q", got)
+	}
+
+	// Every write failed and the reply moves on: one nudge, naming the miss.
+	l = fresh()
+	l.record("fs__file_get", patch("readme.md"))
+	l.noteFailure("fs__file_patch", patch("readme.md"), miss)
+	l.noteFailure("fs__file_patch", patch("readme.md"), miss)
+	got := l.unlanded("The file ends at line 184. I'll append the new section after the last line.")
+	if !strings.Contains(got, "No write landed") || !strings.Contains(got, "fs__file_patch readme.md: 0 matches") || !strings.Contains(got, "after_line") {
+		t.Fatalf("nudge = %q", got)
+	}
+	if again := l.unlanded("### Adding the section"); again != "" {
+		t.Fatalf("once a turn: %q", again)
+	}
+
+	// A reply that owns the miss ships.
+	l = fresh()
+	l.noteFailure("fs__file_patch", patch("readme.md"), miss)
+	for _, reply := range []string{
+		"I couldn't apply the edit: the text in readme.md did not match.",
+		"The patch failed twice (0 matches); the section was not written.",
+	} {
+		if got := l.unlanded(reply); got != "" {
+			t.Errorf("%q: %q", reply, got)
+		}
+	}
+
+	// A write that landed after the misses clears it.
+	l = fresh()
+	l.noteFailure("fs__file_patch", patch("readme.md"), miss)
+	l.record("fs__file_patch", patch("readme.md"))
+	if got := l.unlanded("Added the section at the end of readme.md."); got != "" {
+		t.Fatalf("landed: %q", got)
+	}
+
+	// Only writes count as failures; a failed read or command does not.
+	l = fresh()
+	l.noteFailure("fs__file_get", patch("nope.md"), errors.New("no such file"))
+	l.noteFailure("shell__command_run", nil, errors.New("exit 1"))
+	if got := l.unlanded("nope.md does not exist."); got != "" {
+		t.Fatalf("read failure: %q", got)
+	}
+	var none *turnLanes
+	none.noteFailure("fs__file_patch", patch("a"), miss)
+	if none.unlanded("x") != "" {
+		t.Fatal("nil lanes")
+	}
+}
+
+// go test, then the patch, then "tests pass": the run is from before the
+// change, so the claim is sent back; a run after the patch clears it.
+func TestLanes_StaleCheckClaim(t *testing.T) {
+	l := lanesFrom(withTurnLanes(context.Background(), "fix calc.go so the tests pass, then run go test"))
+	write(l, "shell__command_run", map[string]string{"command": "go test ./..."})
+	write(l, "fs__file_patch", map[string]string{"path": "calc.go", "old": "a - b", "new": "a + b"})
+	got := l.contradiction("Tests pass now. Changed `a - b` to `a + b` in calc.go.")
+	if !strings.Contains(got, "no command ran after the last code change") {
+		t.Fatalf("stale run: %q", got)
+	}
+	if got := l.contradiction("Changed `a - b` to `a + b` in calc.go; not re-run yet."); got != "" {
+		t.Fatalf("owned: %q", got)
+	}
+	write(l, "shell__command_run", map[string]string{"command": "go test ./..."})
+	if got := l.contradiction("Tests pass now."); got != "" {
+		t.Fatalf("re-run: %q", got)
+	}
+	// A text-file write does not make an earlier run stale.
+	l = lanesFrom(withTurnLanes(context.Background(), "fix the readme typo and run make lint"))
+	write(l, "shell__command_run", map[string]string{"command": "make lint"})
+	write(l, "fs__file_patch", map[string]string{"path": "readme.md", "old": "hi", "new": "hello"})
+	if got := l.contradiction("Fixed the typo; lint passed."); got != "" {
+		t.Fatalf("text write: %q", got)
+	}
+}
+
+// An edit was asked for, the turn only read, and the reply is a diagnosis
+// with no question: sent back once. Questions, reviews, and "no change
+// needed" ship.
+func TestLanes_UnlandedDiagnosis(t *testing.T) {
+	ask := func(inbound string) *turnLanes { return lanesFrom(withTurnLanes(context.Background(), inbound)) }
+	get := func(l *turnLanes, path string) { l.record("fs__file_get", view("", path).args) }
+
+	l := ask("go test fails in this repo. Fix calc.go so the tests pass, then run go test.")
+	get(l, "calc.go")
+	get(l, "calc_test.go")
+	got := l.unlanded("Two bugs in `calc.go`:\n\n1. `Add` returns `a - b`\n2. `Double` returns `n * 3`")
+	if !strings.Contains(got, "only read") || !strings.Contains(got, "fs__file_patch") {
+		t.Fatalf("diagnosis: %q", got)
+	}
+	if again := l.unlanded("Still two bugs."); again != "" {
+		t.Fatalf("once: %q", again)
+	}
+
+	// In order: a question; no edit verb; the reply asks; nothing to do;
+	// already so; declined; owned.
+	for _, tc := range []struct{ inbound, reply string }{
+		{"What does calc.go do?", "It adds and doubles."},
+		{"Review calc.go and tell me what is wrong.", "Add subtracts; Double triples."},
+		{"Fix calc.go.", "Which of the two functions should I fix first?"},
+		{"Fix the typo in calc.go.", "There is no typo in calc.go; no change was needed."},
+		{"Add a Mul function to calc.go.", "calc.go already has Mul, at line 12."},
+		{"Fix Add in calc.go.", "Add is correct as written; it should not be changed."},
+		{"Fix calc.go so the tests pass.", "I couldn't find a test file, so nothing was changed."},
+	} {
+		l := ask(tc.inbound)
+		get(l, "calc.go")
+		if got := l.unlanded(tc.reply); got != "" {
+			t.Errorf("%q / %q: %q", tc.inbound, tc.reply, got)
+		}
+	}
+	// Nothing read: the theater and claim checks own that turn.
+	l = ask("Fix calc.go.")
+	if got := l.unlanded("Fixed."); got != "" {
+		t.Fatalf("no read: %q", got)
+	}
+}
+
 func TestLanes_NoTurnNoRefusal(t *testing.T) {
 	var l *turnLanes
 	if got := l.check([]callView{view("fs__file_patch", "a.go")}); got[0] != nil {

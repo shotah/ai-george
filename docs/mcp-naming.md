@@ -9,8 +9,8 @@ a local dialect.
 mcp-beam, mcp-go-math, mcp-gemini-search, flights-search-mcp, rentals-search-mcp,
 cars-search-mcp, feeds-mcp, twitter-mcp, google-maps-mcp, boards-mcp,
 image-generation-mcp, pendant-mcp, and future MCPs. The local coding
-loop adds fs-mcp, git-mcp, shell-mcp, and github-mcp —
-see [coding-mcp.md](coding-mcp.md).
+loop adds fs-mcp, git-mcp, shell-mcp, and github-mcp — see the
+[Tools table in the readme](../readme.md#tools).
 **Why it matters:** small models (Qwen) pick tools by **name tokens +
 description**. Host closest-match repair scores **name tokens only** and
 drops generic verbs. Synonyms and double prefixes break matching.
@@ -144,7 +144,7 @@ and the live catalog, not in `PERSONA.md`.
 | `pendant` | `avatar_update`, `backdrop_update`, `theme_list` | `pendant__avatar_update` |
 | `boards` | `roster_list`, `notices_list`, `challenges_create` | `boards__roster_list` |
 
-Local coding agent ([coding-mcp.md](coding-mcp.md)). `fs`, `git`, `shell`, and `github` are granted.
+Local coding agent (george). `fs`, `git`, `shell`, and `github` are granted.
 
 | Server id (`mcp.toml`) | Example tools | Host calls |
 | --- | --- | --- |
