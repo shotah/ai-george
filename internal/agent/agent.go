@@ -760,17 +760,19 @@ func (a *Agent) runLoop(ctx context.Context, sessionID, userID string, messages 
 			)
 		}
 		// Models sometimes print the tool call instead of emitting one. Left
-		// alone that JSON becomes the visible reply — the agent answering in
-		// wire format — so run it as the call it plainly is. Not on the landing
+		// alone that text becomes the visible reply — the agent answering in
+		// wire format — so run it as the call it plainly is. Several Qwen3.6
+		// <tool_call> blocks in one message are one batch. Not on the landing
 		// call: nothing can execute there, so text (even ugly) must stand.
 		if len(res.ToolCalls) == 0 && a.tools != nil && !final {
-			if call, ok := salvageToolCall(res.Content, toolDefs, messages); ok {
+			if calls := salvageToolCalls(res.Content, toolDefs, messages); len(calls) > 0 {
 				a.log.Info("model printed a tool call instead of emitting one; executing it",
-					"name", call.Name,
+					"name", calls[0].Name,
+					"calls", len(calls),
 					"chars", len(res.Content),
 					"iteration", iter+1,
 				)
-				res.ToolCalls = []provider.ToolCall{call}
+				res.ToolCalls = calls
 				res.Content = ""
 				recoveries++
 			}
@@ -1233,29 +1235,57 @@ func (a *Agent) startSpinupNotice(ctx context.Context, status channel.StatusWrit
 	}
 }
 
-// salvageToolCall recovers a tool call the model wrote as text. The name must
-// look like a tool — published, or at least carrying a server prefix — so an
-// ordinary reply that happens to contain JSON is never hijacked into a call.
-// An unpublished but prefixed name is still worth running: the host answers with
-// the real names, which is how the model gets corrected.
+// salvageToolCalls recovers tool calls the model wrote as text. Qwen3.6 coder
+// XML is a batch: every <tool_call> block whose name passes toolCallNameOK
+// runs, and the printed XML is not also the reply. A message with no such
+// block falls through to salvageToolCall (Hermes JSON, fn-style, args-only).
+func salvageToolCalls(content string, defs []provider.ToolDef, messages []provider.Message) []provider.ToolCall {
+	if xml := provider.ParseToolCallTexts(content); len(xml) > 0 {
+		kept := make([]provider.ToolCall, 0, len(xml))
+		for _, call := range xml {
+			if toolCallNameOK(call.Name, defs) {
+				kept = append(kept, call)
+			}
+		}
+		return kept
+	}
+	call, ok := salvageToolCall(content, defs, messages)
+	if !ok {
+		return nil
+	}
+	return []provider.ToolCall{call}
+}
+
+// salvageToolCall recovers one Hermes JSON, fn-style, or args-only call. The
+// name must look like a tool — published, or at least carrying a server
+// prefix — so an ordinary reply that happens to contain JSON is never
+// hijacked into a call. An unpublished but prefixed name is still worth
+// running: the host answers with the real names, which is how the model gets
+// corrected.
 //
 // hints come from the latest assistant message (name printed last turn, args-only
 // JSON this turn). System nudge text is ignored so examples like garmin__sleep_get
-// do not steal the call.
+// do not steal the call. This path does not read Qwen3.6 <function= XML.
 func salvageToolCall(content string, defs []provider.ToolDef, messages []provider.Message) (provider.ToolCall, bool) {
 	call, ok := provider.ParseToolCallTextHinted(content, lastAssistantToolHints(messages))
-	if !ok {
+	if !ok || !toolCallNameOK(call.Name, defs) {
 		return provider.ToolCall{}, false
 	}
-	if strings.Contains(call.Name, "__") {
-		return call, true
+	return call, true
+}
+
+// toolCallNameOK is the salvage name check: a server__tool prefix, or a name
+// in the published defs.
+func toolCallNameOK(name string, defs []provider.ToolDef) bool {
+	if strings.Contains(name, "__") {
+		return true
 	}
 	for _, def := range defs {
-		if def.Name == call.Name {
-			return call, true
+		if def.Name == name {
+			return true
 		}
 	}
-	return provider.ToolCall{}, false
+	return false
 }
 
 func lastAssistantToolHints(messages []provider.Message) []string {

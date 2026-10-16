@@ -1,6 +1,7 @@
 package provider_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -133,6 +134,172 @@ func TestParseToolCallTextHinted_ArgsOnlyFromPriorTurn(t *testing.T) {
 	}
 	if !strings.Contains(call.Arguments, "christopherblodgett@gmail.com") {
 		t.Fatalf("arguments = %q", call.Arguments)
+	}
+}
+
+func TestParseToolCallText_QwenXML(t *testing.T) {
+	content := `<tool_call>
+<function=fs__file_get>
+<parameter=path>
+readme.md
+</parameter>
+</function>
+</tool_call>`
+	call, ok := provider.ParseToolCallText(content)
+	if !ok {
+		t.Fatalf("ParseToolCallText(%q) = not a call", content)
+	}
+	if call.Name != "fs__file_get" {
+		t.Errorf("name = %q, want fs__file_get", call.Name)
+	}
+	if call.Arguments != `{"path":"readme.md"}` {
+		t.Errorf("arguments = %q, want %q", call.Arguments, `{"path":"readme.md"}`)
+	}
+	if !strings.HasPrefix(call.ID, "call_text_") {
+		t.Errorf("id = %q, want call_text_ prefix", call.ID)
+	}
+}
+
+func TestParseToolCallTexts_QwenXMLBatch(t *testing.T) {
+	content := `<tool_call>
+<function=fs__file_get>
+<parameter=path>
+readme.md
+</parameter>
+</function>
+</tool_call>
+<tool_call>
+<function=fs__dir_list>
+<parameter=path>
+src
+</parameter>
+</function>
+</tool_call>`
+	calls := provider.ParseToolCallTexts(content)
+	if len(calls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(calls))
+	}
+	want := []struct {
+		name string
+		args string
+	}{
+		{name: "fs__file_get", args: `{"path":"readme.md"}`},
+		{name: "fs__dir_list", args: `{"path":"src"}`},
+	}
+	for i, w := range want {
+		if calls[i].Name != w.name {
+			t.Errorf("calls[%d].Name = %q, want %q", i, calls[i].Name, w.name)
+		}
+		if calls[i].Arguments != w.args {
+			t.Errorf("calls[%d].Arguments = %q, want %q", i, calls[i].Arguments, w.args)
+		}
+		if !strings.HasPrefix(calls[i].ID, "call_text_") {
+			t.Errorf("calls[%d].ID = %q, want call_text_ prefix", i, calls[i].ID)
+		}
+	}
+	if calls[0].ID == calls[1].ID {
+		t.Errorf("both calls got id %q", calls[0].ID)
+	}
+	first, ok := provider.ParseToolCallText(content)
+	if !ok || first.Name != "fs__file_get" || first.Arguments != want[0].args {
+		t.Fatalf("ParseToolCallText = %+v, ok=%v, want the first call", first, ok)
+	}
+}
+
+func TestParseToolCallText_QwenXMLObjectParam(t *testing.T) {
+	content := `<tool_call>
+<function=fs__search>
+<parameter=query>
+{"path":"readme.md","limit":2}
+</parameter>
+<parameter=tags>
+["a","b"]
+</parameter>
+</function>
+</tool_call>`
+	call, ok := provider.ParseToolCallText(content)
+	if !ok {
+		t.Fatal("expected a call")
+	}
+	if strings.Contains(call.Arguments, `"query":"`) || strings.Contains(call.Arguments, `"tags":"`) {
+		t.Fatalf("structured param encoded as a string: %s", call.Arguments)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		t.Fatalf("arguments %q: %v", call.Arguments, err)
+	}
+	q, ok := args["query"].(map[string]any)
+	if !ok {
+		t.Fatalf("query type = %T, want object", args["query"])
+	}
+	if q["path"] != "readme.md" || q["limit"] != float64(2) {
+		t.Fatalf("query = %#v", q)
+	}
+	tags, ok := args["tags"].([]any)
+	if !ok {
+		t.Fatalf("tags type = %T, want array", args["tags"])
+	}
+	if len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
+		t.Fatalf("tags = %#v", tags)
+	}
+}
+
+func TestParseToolCallText_QwenXMLDriftedClose(t *testing.T) {
+	content := `<tool_call>
+<function=fs__file_get>
+<parameter=path>
+readme.md
+</parameter>
+</function>
+</function>
+</function_invocation>
+</tool_call>`
+	call, ok := provider.ParseToolCallText(content)
+	if !ok {
+		t.Fatalf("ParseToolCallText(%q) = not a call", content)
+	}
+	if call.Name != "fs__file_get" {
+		t.Errorf("name = %q, want fs__file_get", call.Name)
+	}
+	if call.Arguments != `{"path":"readme.md"}` {
+		t.Errorf("arguments = %q, want %q", call.Arguments, `{"path":"readme.md"}`)
+	}
+}
+
+func TestParseToolCallText_QwenXMLTrimsOneNewline(t *testing.T) {
+	// Two trailing newlines and a leading space: only one newline on each
+	// side is removed, so the space and the extra newline stay in the string.
+	content := "<tool_call>\n<function=fs__file_get>\n<parameter=path>\n readme.md\n\n</parameter>\n</function>\n</tool_call>"
+	call, ok := provider.ParseToolCallText(content)
+	if !ok {
+		t.Fatal("expected a call")
+	}
+	if call.Arguments != "{\"path\":\" readme.md\\n\"}" {
+		t.Fatalf("arguments = %q", call.Arguments)
+	}
+}
+
+func TestParseToolCallText_QwenXMLNoParams(t *testing.T) {
+	content := `<tool_call>
+<function=fs__file_get>
+</function>
+</tool_call>`
+	call, ok := provider.ParseToolCallText(content)
+	if !ok {
+		t.Fatal("expected a call")
+	}
+	if call.Name != "fs__file_get" || call.Arguments != "{}" {
+		t.Fatalf("got name %q arguments %q", call.Name, call.Arguments)
+	}
+}
+
+func TestParseToolCallText_QwenXMLProse(t *testing.T) {
+	content := "I would use fs__file_get to read readme.md if you want the contents."
+	if call, ok := provider.ParseToolCallText(content); ok {
+		t.Errorf("ParseToolCallText(%q) = %+v, want rejected", content, call)
+	}
+	if calls := provider.ParseToolCallTexts(content); len(calls) != 0 {
+		t.Errorf("ParseToolCallTexts(%q) = %+v, want rejected", content, calls)
 	}
 }
 

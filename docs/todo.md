@@ -22,7 +22,57 @@ and covered by `go test ./...`. The assistant-era weight (budgets, auth,
 holds, `CallRaw`) is deleted. The previous work list, with every reading
 that got here, is in git history.
 
-Last full gate, twelve fixtures at `-eval.n=5`: 49 of 55, plus
+Full gate, 2026-10-15, eighteen fixtures at `-eval.n=3`: 51 of 54
+in 25 minutes, on `george-q8` (same Q8 weights, `num_ctx` 131072,
+`presence_penalty 0`, thinking off; `fs` 0.0.7). The new fixture is
+`printed_qwen_xml`: a `<function=fs__file_get><parameter=path>` block
+with no `tool_calls` field is run, and the reply is the file. 3/3.
+Sixteen of the old seventeen are 3/3, so that set is 48 of 51, up from
+47. The run that moved is `append_section` (2/3 to 3/3). `least_change`
+is still 0/3: one run added `Sub` and `TestSub`, two added `Subtract`
+and `TestSubtract`, beside the fixed `Add`. 18 runs over their round
+budget, down from 21: `expand_dont_copy`, `test_with_behaviour`,
+`append_section`, and `least_change` on every run; `parallel_patches`
+and `patch_not_printed_diff` twice; `long_file_edit` and `unnamed_file`
+once. The harness change under this reading is the Qwen3.6 call parse
+([tool-call-plan.md](tool-call-plan.md)): printed `<function=` blocks
+run as a batch, and `george-q8` no longer gets the Hermes JSON grammar
+on a bad-name retry.
+
+Last full gate, 2026-10-04, seventeen fixtures at `-eval.n=3`: 47 of 51
+in 21 minutes, on `george-q8` (`qwen3.6:35b-a3b-mtp-q8_0`, `num_ctx`
+131072, the `-coding` tag's sampling, `presence_penalty 0`, thinking
+off; `fs` 0.0.7). Fifteen fixtures 3/3, `append_section` 2/3,
+`least_change` 0/3: every run fixed `Add` and then added a `Subtract` and
+a `TestSubtract` to keep the old behaviour, the exact move the contract's
+least-change line names. 21 runs over their round budget, most of them
+`expand_dont_copy`, `test_with_behaviour`, `unnamed_file`.
+
+Same config on the bf16 weights (`george-bf16`, 70 GB resident after
+`ttm.pages_limit=20971520` raised GTT to 80 GiB): 47 of 51 in 60 minutes.
+`least_change` 2/3 (up from 0), `append_section` 2/3, `patch_not_printed_diff`
+1/3 (the insert-without-remove half move, twice). Same total as Q8 at
+2.8x the wall time (mean 68 s a turn against about 25 s). Quant is not
+where the misses are; Q8 stays the default.
+
+Same config with thinking on (`LLM_REASONING_EFFORT` unset): 44 of 51
+in 37 minutes. `least_change` 1/3 and `append_section` 3/3 moved up;
+`test_with_behaviour` 1/3 (two runs never wrote the test), `check_fails_first`
+2/3, `patch_not_printed_diff` 1/3 (the insert-without-remove half move
+again) moved down. Thinking per call: median 157 chars, p90 575, max
+4.7k; completion tokens per turn doubled (361 to 737) and 23 runs went
+over budget. Thinking off stays the default; the fixtures it helped are
+the two that need judgment, and three fixtures it hurt are the ones that
+need a tool call after a result.
+
+Same day, same fixture `patch_not_printed_diff` at n=3 under three
+configs: Q4 32k `presence_penalty 0` 3/3; Q8 128k `presence_penalty 1.5`
+(the model card's non-thinking preset) 1/3, with `old` reflowed onto one
+line twice and one run deleting the item while reporting a move; Q8 128k
+`presence_penalty 0` 2/3. A presence penalty punishes repeated tokens and
+an `old`/`new` patch is verbatim repetition. Keep it at 0.
+
+Before that, twelve fixtures at `-eval.n=5` on Q4 at 32k: 49 of 55, plus
 `pick_an_option` 3/5 run alone.
 
 | 5/5 | 4/5 | 3/5 |
@@ -370,3 +420,4 @@ Recorded so the next pass does not retry them.
 - Whole-file write through `file_patch` with no `old`. The refusal is
   right; it lost a test once.
 - Shell as the default write path. Above.
+- **GitLab MCP tool.** Add support for the GitLab MCP server so george can manage GitLab projects, MRs, and issues directly.

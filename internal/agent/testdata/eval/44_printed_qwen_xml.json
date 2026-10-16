@@ -1,0 +1,25 @@
+{
+  "name": "printed_qwen_xml",
+  "why": "A Qwen3.6 call printed as <function=><parameter=> is executed. The reply is the file, not the XML.",
+  "inbound": "What does greet.txt say?",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "result": "hi\n"
+    }
+  ],
+  "script": [
+    {
+      "content": "<tool_call>\n<function=fs__file_get>\n<parameter=path>\ngreet.txt\n</parameter>\n</function>\n</tool_call>"
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "max_tool_calls": 1,
+    "tools_called": [{ "name": "fs__file_get", "args_regex": "greet\\.txt" }],
+    "reply_regex": "(?i)\\bhi\\b",
+    "reply_not_regex": "<function="
+  }
+}

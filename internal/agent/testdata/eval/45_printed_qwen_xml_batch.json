@@ -1,0 +1,33 @@
+{
+  "name": "printed_qwen_xml_batch",
+  "why": "Two Qwen3.6 <tool_call> blocks in one message run as one batch, not the first call alone.",
+  "inbound": "Read a.txt and b.txt and tell me what each says.",
+  "force": ["fs", "shell", "git"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "fs__file_get",
+      "result": "missing\n",
+      "by_args": [
+        { "args_regex": "a\\.txt", "result": "alpha\n" },
+        { "args_regex": "b\\.txt", "result": "bravo\n" }
+      ]
+    }
+  ],
+  "script": [
+    {
+      "content": "<tool_call>\n<function=fs__file_get>\n<parameter=path>\na.txt\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=fs__file_get>\n<parameter=path>\nb.txt\n</parameter>\n</function>\n</tool_call>"
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "same_round": [
+      [
+        { "name": "fs__file_get", "args_regex": "a\\.txt" },
+        { "name": "fs__file_get", "args_regex": "b\\.txt" }
+      ]
+    ],
+    "reply_regex": "(?s)alpha.*bravo",
+    "reply_not_regex": "<function="
+  }
+}

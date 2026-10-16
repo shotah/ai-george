@@ -1,0 +1,28 @@
+{
+  "name": "printed_qwen_xml_object",
+  "why": "A <parameter> whose value is a JSON object is passed as that object, not as a string of JSON.",
+  "inbound": "Look up the widget.",
+  "force": ["fs", "shell", "git", "probe"],
+  "tools_from": ["fs", "shell", "git"],
+  "tools": [
+    {
+      "name": "probe__object_get",
+      "description": "Look up one widget by a query object.",
+      "result": "missing\n",
+      "by_args": [
+        { "args_regex": "\"query\":\\{", "result": "ok-7\n" }
+      ]
+    }
+  ],
+  "script": [
+    {
+      "content": "<tool_call>\n<function=probe__object_get>\n<parameter=query>\n{\"path\":\"a.go\",\"limit\":1}\n</parameter>\n</function>\n</tool_call>"
+    }
+  ],
+  "expect": {
+    "round_budget": 3,
+    "tools_called": [{ "name": "probe__object_get", "args_regex": "\"query\":\\{" }],
+    "reply_regex": "(?i)ok-7",
+    "reply_not_regex": "<function="
+  }
+}

@@ -107,6 +107,51 @@ func TestClient_Complete_ForcedToolNames(t *testing.T) {
 	}
 }
 
+// Qwen3.6's chat template forbids the Hermes JSON schema. ForceToolNames still
+// sends tools, and omits response_format, for that family (including the local
+// george-q8 tag).
+func TestClient_Complete_QwenForceToolNamesOmitsResponseFormat(t *testing.T) {
+	for _, model := range []string{"qwen3.6:35b-a3b-coding", "george-q8", "george-q8:latest"} {
+		t.Run(model, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "chatcmpl-test",
+					"choices": []map[string]any{{
+						"index":         0,
+						"finish_reason": "stop",
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": "no tool this turn",
+						},
+					}},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			c := provider.New(srv.URL, "test-key", model)
+			if _, err := c.Complete(context.Background(), provider.Request{
+				Messages:       []provider.Message{{Role: provider.RoleUser, Content: "hrv yesterday?"}},
+				Tools:          []provider.ToolDef{{Name: "garmin__hrv_get", Parameters: map[string]any{"type": "object"}}},
+				ForceToolNames: []string{"garmin__hrv_get"},
+			}); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if _, ok := body["response_format"]; ok {
+				t.Errorf("response_format = %v, want it omitted", body["response_format"])
+			}
+			tools, ok := body["tools"].([]any)
+			if !ok || len(tools) == 0 {
+				t.Fatalf("tools = %v, want the tool list kept", body["tools"])
+			}
+		})
+	}
+}
+
 // Streaming a grammar-constrained reply would type raw JSON into the user's
 // bubble, so the streaming path must degrade to a single blocking call.
 func TestClient_CompleteStream_ForcedToolNamesDoesNotStream(t *testing.T) {

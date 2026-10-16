@@ -67,6 +67,7 @@ type Request struct {
 	//
 	// Ollama drops the tool_calls field whenever a response_format is set, so the
 	// call arrives as JSON in content and Complete converts it back to a ToolCall.
+	// Qwen3.6-family ids skip that schema; see omitsForcedToolSchema.
 	ForceToolNames []string
 }
 
@@ -156,7 +157,9 @@ func (c *Client) buildParams(req Request) (openai.ChatCompletionNewParams, error
 			Parameters:  shared.FunctionParameters(t.Parameters),
 		}))
 	}
-	if len(req.ForceToolNames) > 0 {
+	// Qwen3.6's chat template forbids the Hermes {"name","arguments"} object, so
+	// the name list stays in the tool error and Tools stays on the request.
+	if len(req.ForceToolNames) > 0 && !omitsForcedToolSchema(c.model) {
 		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
@@ -168,6 +171,17 @@ func (c *Client) buildParams(req Request) (openai.ChatCompletionNewParams, error
 		}
 	}
 	return params, nil
+}
+
+// omitsForcedToolSchema reports Qwen3.6-family model ids. Their chat template
+// forbids the Hermes {"name","arguments"} schema, so ForceToolNames must not
+// send response_format. george-q8 is the local tag for that weight.
+func omitsForcedToolSchema(model string) bool {
+	id := strings.ToLower(strings.TrimSpace(model))
+	if strings.Contains(id, "qwen3.6") || strings.Contains(id, "qwen3.5") || strings.Contains(id, "qwen35") {
+		return true
+	}
+	return id == "george-q8" || strings.HasPrefix(id, "george-q8")
 }
 
 // forcedToolCallSchema is the grammar for "one tool call, name from this set".

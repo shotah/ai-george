@@ -89,7 +89,11 @@ system message. Ollama's `qwen3-coder` renderer keeps only the first system
 message and silently drops the rest, so the layout with system text after the
 user turn (`many`) hides the harness, budget, and loop notes from that model.
 The `qwen3.5` renderer behind `qwen3.6:35b-a3b-coding` does read a later
-system message; the gate runs folded on it anyway.
+system message; the gate runs folded on it anyway. The same renderer and
+parser are what `qwen3.6:35b-a3b-mtp-q8_0` and `george-q8` declare. The
+call string that renderer writes, and the older Hermes string Qwen3 was
+trained on, are in [tool-dialect.md](tool-dialect.md). The change to
+match it is [tool-call-plan.md](tool-call-plan.md).
 
 ## Progress per invocation
 

@@ -27,6 +27,7 @@ var prefixedToolName = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_]*__[A-Za-z0-9_]+`
 // which makes Ollama omit tool_calls entirely.
 //
 // Accepts:
+//   - Qwen3.6 coder XML: <tool_call><function=name><parameter=key>…</parameter></function></tool_call>
 //   - JSON objects (bare / fenced / tagged / embedded), with arguments under
 //     "parameters" / "arguments" / …
 //   - Function-call prose Qwen often invents:
@@ -34,11 +35,116 @@ var prefixedToolName = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_]*__[A-Za-z0-9_]+`
 //   - Args-only JSON (```json {…} ```) paired with a server__tool name in the
 //     same text, or a single hint name from the prior assistant turn
 func ParseToolCallText(content string) (ToolCall, bool) {
+	if calls := ParseToolCallTexts(content); len(calls) > 0 {
+		return calls[0], true
+	}
 	return ParseToolCallTextHinted(content, nil)
 }
 
-// ParseToolCallTextHinted is ParseToolCallText plus optional tool-name hints
-// (e.g. the previous assistant message printed the name, this turn only the args).
+// ParseToolCallTexts returns every Qwen3.6 coder-XML tool call in content, in
+// order. It reads the original text, before tool-call tags are stripped.
+// A spare </function> or </function_invocation> close does not reject a block.
+// A message with no <function= block returns nil.
+func ParseToolCallTexts(content string) []ToolCall {
+	var calls []ToolCall
+	for {
+		start := strings.Index(content, "<tool_call>")
+		if start < 0 {
+			return calls
+		}
+		content = content[start+len("<tool_call>"):]
+		end := strings.Index(content, "</tool_call>")
+		if end < 0 {
+			return calls
+		}
+		if call, ok := parseCoderXMLToolCall(content[:end]); ok {
+			calls = append(calls, call)
+		}
+		content = content[end+len("</tool_call>"):]
+	}
+}
+
+// parseCoderXMLToolCall parses one <tool_call> body. The name is the text
+// after <function= up to >. Each <parameter=key>…</parameter> is one argument.
+func parseCoderXMLToolCall(body string) (ToolCall, bool) {
+	const fnOpen = "<function="
+	i := strings.Index(body, fnOpen)
+	if i < 0 {
+		return ToolCall{}, false
+	}
+	rest := body[i+len(fnOpen):]
+	gt := strings.IndexByte(rest, '>')
+	if gt < 0 {
+		return ToolCall{}, false
+	}
+	name := strings.TrimSpace(rest[:gt])
+	if name == "" {
+		return ToolCall{}, false
+	}
+	rest = rest[gt+1:]
+
+	args := map[string]any{}
+	const (
+		paramOpen  = "<parameter="
+		paramClose = "</parameter>"
+	)
+	for {
+		p := strings.Index(rest, paramOpen)
+		if p < 0 {
+			break
+		}
+		rest = rest[p+len(paramOpen):]
+		gt = strings.IndexByte(rest, '>')
+		if gt < 0 {
+			return ToolCall{}, false
+		}
+		key := strings.TrimSpace(rest[:gt])
+		rest = rest[gt+1:]
+		c := strings.Index(rest, paramClose)
+		if c < 0 {
+			return ToolCall{}, false
+		}
+		if key != "" {
+			args[key] = coderParamValue(rest[:c])
+		}
+		rest = rest[c+len(paramClose):]
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return ToolCall{}, false
+	}
+	return ToolCall{
+		ID:        fmt.Sprintf("call_text_%d", textCallSeq.Add(1)),
+		Name:      name,
+		Arguments: string(raw),
+	}, true
+}
+
+// coderParamValue trims one leading and one trailing newline, matching the
+// qwen3_coder parser (TrimPrefix/TrimSuffix of a single newline). A JSON
+// object or array is decoded; every other value stays a string.
+func coderParamValue(raw string) any {
+	raw = strings.TrimPrefix(raw, "\n")
+	raw = strings.TrimSuffix(raw, "\n")
+	probe := strings.TrimSpace(raw)
+	if probe == "" || (probe[0] != '{' && probe[0] != '[') {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	switch v.(type) {
+	case map[string]any, []any:
+		return v
+	default:
+		return raw
+	}
+}
+
+// ParseToolCallTextHinted recovers a Hermes JSON, fn-style, or args-only call.
+// hintNames supplies the tool name when this text has only the arguments and
+// an earlier turn printed the name.
 func ParseToolCallTextHinted(content string, hintNames []string) (ToolCall, bool) {
 	stripped := toolCallWrapper.ReplaceAllString(content, "")
 	if call, ok := parseJSONToolCall(stripped); ok {
